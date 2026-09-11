@@ -9,13 +9,266 @@ datasource db {
   provider = "postgresql"
 }
 
-// Modelo inicial de exemplo — ajuste conforme o domínio do projeto.
-model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+// ============================================================================
+// dindin — planejador financeiro
+//
+// Nada disso é usado pelo app ainda: no v1 o plano vive no localStorage do
+// navegador e não existe cadastro. O banco entra na fase do check-in mensal,
+// quando a pessoa deixa o e-mail pra receber o lembrete.
+//
+// Por isso não há senha em lugar nenhum: a identidade é o e-mail mais um
+// token de link mágico.
+//
+// Os `slug` de CategoriaGastoFixo são contrato com o frontend
+// (dindinFrontend/src/domain/categorias.ts). Slug publicado não muda.
+// ============================================================================
 
-  @@map("users")
+// ----------------------------------------------------------------------------
+// Identidade
+// ----------------------------------------------------------------------------
+
+model Subscriber {
+  id    String @id @default(uuid())
+  email String @unique
+  /// token do link mágico do e-mail mensal; rotacionado a cada envio
+  token String @unique
+
+  /// descadastro em um clique: mantém o histórico, para de enviar
+  ativo Boolean @default(true)
+
+  criadoEm     DateTime @default(now())
+  atualizadoEm DateTime @updatedAt
+
+  perfil     Profile?
+  categorias CategoriaGastoFixo[]
+  planos     Plan[]
+  metas      Goal[]
+  checkIns   CheckIn[]
+
+  @@map("subscribers")
+}
+
+// ----------------------------------------------------------------------------
+// Perfil — o estado atual das respostas
+// ----------------------------------------------------------------------------
+
+enum TipoRenda {
+  CLT
+  PJ
+  INFORMAL
+
+  @@map("tipo_renda")
+}
+
+enum Moradia {
+  PAIS
+  ALUGUEL
+  DIVIDIDO
+  PROPRIA
+  FINANCIADA
+
+  @@map("moradia")
+}
+
+model Profile {
+  subscriberId String     @id @map("subscriber_id")
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  rendaMensal Decimal   @map("renda_mensal") @db.Decimal(12, 2)
+  /// CLT → reserva de 3 meses; PJ e INFORMAL → 6
+  tipoRenda   TipoRenda @map("tipo_renda")
+  idade       Int
+  moradia     Moradia
+  /// aluguel ou parcela + condomínio; 0 quando mora com os pais ou casa quitada
+  custoMoradia Decimal  @map("custo_moradia") @db.Decimal(12, 2)
+  /// poupança, conta rendendo, dinheiro parado
+  guardado     Decimal  @db.Decimal(12, 2)
+
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  gastosFixos GastoFixo[]
+  dividas     Divida[]
+
+  @@map("profiles")
+}
+
+// ----------------------------------------------------------------------------
+// Catálogo de gastos fixos
+//
+// Duas origens na mesma tabela:
+//   · catálogo global — subscriberId nulo, slug preenchido, semeado na migration
+//   · criada pela pessoa — subscriberId preenchido, sem slug, ícone padrão
+// ----------------------------------------------------------------------------
+
+enum GrupoCategoria {
+  MORADIA
+  CASA
+  TRANSPORTE
+  SAUDE
+  EDUCACAO
+  PESSOAL
+  OUTROS
+
+  @@map("grupo_categoria")
+}
+
+model CategoriaGastoFixo {
+  id String @id @default(uuid())
+
+  /// contrato com o frontend; nulo nas categorias criadas pela pessoa
+  slug  String?        @unique
+  nome  String
+  grupo GrupoCategoria @default(OUTROS)
+  /// nome do componente no lucide-react; ver components/categorias/icone-categoria.tsx
+  icone String         @default("Tag")
+  /// ordem de exibição dentro do grupo
+  ordem Int            @default(999)
+
+  /// nulo = catálogo global (veio da migration)
+  subscriberId String?     @map("subscriber_id")
+  subscriber   Subscriber? @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  gastos GastoFixo[]
+
+  /// ninguém precisa de duas categorias com o mesmo nome
+  @@unique([subscriberId, nome])
+  @@index([subscriberId])
+  @@index([grupo, ordem])
+  @@map("categorias_gasto_fixo")
+}
+
+model GastoFixo {
+  id String @id @default(uuid())
+
+  profileId String  @map("profile_id")
+  profile   Profile @relation(fields: [profileId], references: [subscriberId], onDelete: Cascade)
+
+  categoriaId String             @map("categoria_id")
+  /// Restrict: apagar uma categoria em uso apagaria o gasto junto, silenciosamente
+  categoria   CategoriaGastoFixo @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+
+  valor Decimal @db.Decimal(12, 2)
+
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  /// uma linha por categoria: dois "Mercado" no mesmo perfil é erro de digitação
+  @@unique([profileId, categoriaId])
+  @@index([profileId])
+  @@map("gastos_fixos")
+}
+
+// ----------------------------------------------------------------------------
+// Dívidas
+// ----------------------------------------------------------------------------
+
+enum TipoDivida {
+  ROTATIVO
+  CHEQUE_ESPECIAL
+  EMPRESTIMO
+  FINANCIAMENTO
+  OUTRA
+
+  @@map("tipo_divida")
+}
+
+model Divida {
+  id String @id @default(uuid())
+
+  profileId String  @map("profile_id")
+  profile   Profile @relation(fields: [profileId], references: [subscriberId], onDelete: Cascade)
+
+  tipo  TipoDivida
+  saldo Decimal    @db.Decimal(12, 2)
+  /// parcela mensal já paga hoje; nulo quando não há parcela fixa
+  parcela Decimal? @db.Decimal(12, 2)
+  /// ex.: 4.3000 = 430% a.a.; nulo usa o padrão do tipo em config.ts
+  taxaAnual Decimal? @map("taxa_anual") @db.Decimal(8, 4)
+
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  @@index([profileId])
+  @@map("dividas")
+}
+
+// ----------------------------------------------------------------------------
+// Plano — imutável e versionado
+//
+// Recalcular cria uma versão nova em vez de atualizar: é o histórico que faz
+// o check-in mensal mostrar "o que mudou desde o mês passado".
+// ----------------------------------------------------------------------------
+
+model Plan {
+  id String @id @default(uuid())
+
+  subscriberId String     @map("subscriber_id")
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  versao Int
+  /// perfil congelado no momento do cálculo, no formato de @/domain
+  inputSnap Json @map("input_snap")
+  /// degrau da cascata, alocações e projeções
+  resultado Json
+
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  @@unique([subscriberId, versao])
+  @@index([subscriberId, criadoEm])
+  @@map("plans")
+}
+
+// ----------------------------------------------------------------------------
+// Metas
+// ----------------------------------------------------------------------------
+
+model Goal {
+  id String @id @default(uuid())
+
+  subscriberId String     @map("subscriber_id")
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  nome      String
+  valorAlvo Decimal @map("valor_alvo") @db.Decimal(12, 2)
+  /// dos dois abaixo, a pessoa informa um e o motor calcula o outro
+  aporteMensal Decimal? @map("aporte_mensal") @db.Decimal(12, 2)
+  prazoMeses   Int?     @map("prazo_meses")
+
+  acumulado Decimal @default(0) @db.Decimal(12, 2)
+
+  /// /meta/<slug> — compartilhável e indexável quando a pessoa escolhe publicar
+  publicSlug String? @unique @map("public_slug")
+
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
+
+  @@index([subscriberId])
+  @@map("goals")
+}
+
+// ----------------------------------------------------------------------------
+// Check-in mensal — o ritual que faz a pessoa voltar
+// ----------------------------------------------------------------------------
+
+model CheckIn {
+  id String @id @default(uuid())
+
+  subscriberId String     @map("subscriber_id")
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  /// "2026-09"
+  competencia String
+
+  rendaReal    Decimal? @map("renda_real") @db.Decimal(12, 2)
+  gastoReal    Decimal? @map("gasto_real") @db.Decimal(12, 2)
+  guardadoReal Decimal? @map("guardado_real") @db.Decimal(12, 2)
+
+  enviadoEm    DateTime? @map("enviado_em")
+  respondidoEm DateTime? @map("respondido_em")
+
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  @@unique([subscriberId, competencia])
+  @@index([subscriberId])
+  @@map("check_ins")
 }
