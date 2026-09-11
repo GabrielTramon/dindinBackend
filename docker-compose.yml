@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dindin-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dindin
+      POSTGRES_PASSWORD: dindin
+      POSTGRES_DB: dindin
+    ports:
+      - "5432:5432"
+    volumes:
+      - dindin-pgdata:/var/lib/postgresql/data
+
+volumes:
+  dindin-pgdata:
