@@ -10,7 +10,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
+    "prisma:deploy": "prisma migrate deploy",
     "db:push": "prisma db push",
+    "db:seed": "tsx prisma/seed.ts",
     "postinstall": "prisma generate"
   },
   "packageManager": "yarn@1.22.22",
