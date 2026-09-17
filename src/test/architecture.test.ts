@@ -90,11 +90,26 @@ describe('arquitetura', () => {
       const origem = moduloDe(a.rel);
       const destino = alvo ? moduloDe(`${alvo}/`) ?? moduloDe(alvo) : null;
       if (!origem || !destino || origem === destino) return null;
-      if (alvo !== `modules/${destino}/index` && alvo !== `modules/${destino}`) {
+      const peloIndex = alvo === `modules/${destino}/index` || alvo === `modules/${destino}`;
+      // teste pode montar os adaptadores reais do vizinho (repositório em memória, Prisma), mas só pelo infra.ts dele
+      const testePeloInfra = a.teste && alvo === `modules/${destino}/infra`;
+      if (!peloIndex && !testePeloInfra) {
         return `importa o interior de "${destino}"; use o index`;
       }
+      // a aresta vale pra teste também: teste de "dividas" que precisa de "perfil" é sinal de dependência errada
       if (!GRAFO[origem]?.includes(destino)) return `"${origem}" não pode depender de "${destino}"`;
       return null;
+    });
+    expect(erros).toEqual([]);
+  });
+
+  it('main só usa um módulo pelo index ou pelo infra.ts', () => {
+    const erros = violacoes((a, _spec, alvo) => {
+      if (!a.rel.startsWith('main/') || !alvo) return null;
+      const destino = moduloDe(`${alvo}/`) ?? moduloDe(alvo);
+      if (!destino) return null;
+      const permitidos = [`modules/${destino}`, `modules/${destino}/index`, `modules/${destino}/infra`];
+      return permitidos.includes(alvo) ? null : `importa o interior de "${destino}"; use o index ou o infra.ts`;
     });
     expect(erros).toEqual([]);
   });
