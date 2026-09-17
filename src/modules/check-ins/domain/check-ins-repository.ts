@@ -8,7 +8,14 @@ export interface CheckInsRepository {
 
   /**
    * Insere ou atualiza.
+   *
+   * Na inserção grava a linha inteira. Na atualização grava SÓ a resposta (rendaReal,
+   * gastoReal, guardadoReal, respondidoEm): enviadoEm é do claimSend/releaseSendClaim,
+   * e uma entidade lida antes da reserva do job não pode apagá-la. Competência, dono e
+   * criadoEm não mudam depois de abertos.
+   *
    * @throws ConflictError ao inserir quando já existe check-in dessa competência (job rodando duas vezes)
+   * @throws BusinessRuleError ao inserir pra um subscriber que não existe mais (conta excluída no meio)
    */
   save(checkIn: CheckIn): Promise<void>;
 

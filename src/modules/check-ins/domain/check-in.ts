@@ -18,6 +18,9 @@ export const FUSO_DO_PRODUTO = 'America/Sao_Paulo';
 
 const COMPETENCIA = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
+/** A mesma mensagem no domínio, no caso de uso e no schema HTTP. */
+export const MENSAGEM_COMPETENCIA_INVALIDA = 'Competência no formato AAAA-MM';
+
 export function competenciaValida(competencia: string): boolean {
   const m = COMPETENCIA.exec(competencia);
   return m !== null && Number(m[1]) >= 2020 && Number(m[1]) <= 2100;
@@ -67,7 +70,7 @@ export class CheckIn {
   private constructor(private props: CheckInProps) {}
 
   static abrir(input: { id: string; subscriberId: string; competencia: string; agora: Date }): CheckIn {
-    ensure(competenciaValida(input.competencia), 'competencia', 'Competência no formato AAAA-MM');
+    ensure(competenciaValida(input.competencia), 'competencia', MENSAGEM_COMPETENCIA_INVALIDA);
     ensureNaoFutura(input.competencia, input.agora);
     return new CheckIn({
       id: input.id,
