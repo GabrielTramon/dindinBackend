@@ -62,4 +62,70 @@ describe('loadConfig', () => {
       /RESEND_API_KEY/,
     );
   });
+
+  describe('RATE_LIMIT', () => {
+    const memoria = { PERSISTENCIA: 'memoria', JWT_SECRET: SEGREDO };
+
+    it('sem valor: ligado em desenvolvimento e produção, desligado com NODE_ENV=test', () => {
+      expect(loadConfig({ ...memoria }).rateLimitEnabled).toBe(true);
+      expect(loadConfig({ ...memoria, NODE_ENV: 'test' }).rateLimitEnabled).toBe(false);
+      expect(
+        loadConfig({
+          NODE_ENV: 'production',
+          JWT_SECRET: SEGREDO,
+          DATABASE_URL: 'postgresql://u:p@db:5432/dindin',
+          EMAIL_PROVEDOR: 'resend',
+          RESEND_API_KEY: 're_x',
+          CORS_ORIGIN: 'https://dindin.app',
+          APP_URL: 'https://dindin.app',
+        }).rateLimitEnabled,
+      ).toBe(true);
+    });
+
+    it('valor explícito vence o padrão do ambiente', () => {
+      expect(loadConfig({ ...memoria, RATE_LIMIT: 'false' }).rateLimitEnabled).toBe(false);
+      expect(loadConfig({ ...memoria, RATE_LIMIT: '0' }).rateLimitEnabled).toBe(false);
+      expect(loadConfig({ ...memoria, NODE_ENV: 'test', RATE_LIMIT: 'true' }).rateLimitEnabled).toBe(true);
+      expect(loadConfig({ ...memoria, NODE_ENV: 'test', RATE_LIMIT: '1' }).rateLimitEnabled).toBe(true);
+    });
+
+    it('valor que não é booleano é recusado', () => {
+      expect(() => loadConfig({ ...memoria, RATE_LIMIT: 'sim' })).toThrow(/RATE_LIMIT/);
+    });
+  });
+
+  describe('LINK_REENVIO_SEGUNDOS', () => {
+    const memoria = { PERSISTENCIA: 'memoria', JWT_SECRET: SEGREDO };
+    const producao = {
+      NODE_ENV: 'production',
+      JWT_SECRET: SEGREDO,
+      DATABASE_URL: 'postgresql://u:p@db:5432/dindin',
+      EMAIL_PROVEDOR: 'resend',
+      RESEND_API_KEY: 're_x',
+      CORS_ORIGIN: 'https://dindin.app',
+      APP_URL: 'https://dindin.app',
+    };
+
+    it('padrão é 60 s, a regra do produto', () => {
+      expect(loadConfig({ ...memoria }).linkResendCooldownSeconds).toBe(60);
+    });
+
+    it('aceita outro valor fora de produção (inclusive 0, pra demo)', () => {
+      expect(loadConfig({ ...memoria, LINK_REENVIO_SEGUNDOS: '120' }).linkResendCooldownSeconds).toBe(120);
+      expect(loadConfig({ ...memoria, LINK_REENVIO_SEGUNDOS: '0' }).linkResendCooldownSeconds).toBe(0);
+    });
+
+    it('recusa negativo, fração, texto e mais de 1 hora', () => {
+      for (const valor of ['-1', '1.5', 'abc', '3601']) {
+        expect(() => loadConfig({ ...memoria, LINK_REENVIO_SEGUNDOS: valor })).toThrow(/LINK_REENVIO_SEGUNDOS/);
+      }
+    });
+
+    it('produção não aceita menos que 60 s', () => {
+      expect(() => loadConfig({ ...producao, LINK_REENVIO_SEGUNDOS: '10' })).toThrow(
+        /LINK_REENVIO_SEGUNDOS: precisa ser pelo menos 60 em produção/,
+      );
+      expect(loadConfig({ ...producao, LINK_REENVIO_SEGUNDOS: '90' }).linkResendCooldownSeconds).toBe(90);
+    });
+  });
 });

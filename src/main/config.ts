@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS } from '../modules/identidade/infra';
 
 /*
   Configuração lida do ambiente UMA vez, no boot, e validada inteira. Faltou
@@ -24,11 +25,23 @@ const schema = z
     /** saltos de proxy confiáveis (0 = sem proxy); afeta req.ip e o rate limit */
     TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(0),
     LOG_REQUESTS: booleano.default(true),
+    /**
+     * Limite por IP nas rotas que mandam e-mail ou conferem token. Sem valor: ligado,
+     * menos com NODE_ENV=test (a suíte faz dezenas de pedidos do mesmo IP).
+     */
+    RATE_LIMIT: booleano.optional(),
 
     // obrigatoriedade e tamanho checados no superRefine: assim um boot quebrado lista TODOS os problemas
     JWT_SECRET: z.string().optional(),
     SESSAO_DIAS: z.coerce.number().int().min(1).max(365).default(30),
     LINK_MAGICO_MINUTOS: z.coerce.number().int().min(5).max(1440).default(15),
+    /** sem reenvio de link pro mesmo e-mail antes disso (regra do produto: 60 s) */
+    LINK_REENVIO_SEGUNDOS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(3600)
+      .default(INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS),
 
     /** onde o frontend roda: base dos links que vão nos e-mails */
     APP_URL: z.url({ error: 'APP_URL precisa ser uma URL' }).default('http://localhost:3000'),
@@ -56,6 +69,10 @@ const schema = z
       if (env.PERSISTENCIA === 'memoria') problema('PERSISTENCIA', 'memoria não é permitida em produção');
       if (env.EMAIL_PROVEDOR === 'console') problema('EMAIL_PROVEDOR', 'console não envia e-mail de verdade');
       if (env.CORS_ORIGIN.split(',').some((o) => o.trim() === '*')) problema('CORS_ORIGIN', '"*" não é permitido em produção');
+      // o intervalo por endereço é o que impede usar o link mágico pra lotar a caixa de alguém trocando de IP
+      if (env.LINK_REENVIO_SEGUNDOS < INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS) {
+        problema('LINK_REENVIO_SEGUNDOS', `precisa ser pelo menos ${INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS} em produção`);
+      }
       // os links de login vão por e-mail com essa base: http ou localhost mandaria gente pra lugar errado
       try {
         const url = new URL(env.APP_URL);
@@ -75,9 +92,13 @@ export interface AppConfig {
   corsOrigins: string[] | '*';
   trustProxy: number;
   logRequests: boolean;
+  /** limite por IP em POST /auth/link-magico, /auth/verificar e /descadastrar */
+  rateLimitEnabled: boolean;
   jwtSecret: string;
   sessionTtlSeconds: number;
   magicLinkTtlMinutes: number;
+  /** intervalo mínimo entre dois links pro mesmo e-mail */
+  linkResendCooldownSeconds: number;
   appUrl: string;
   mail: { provider: 'console' | 'resend'; from: string; resendApiKey: string | undefined };
 }
@@ -99,9 +120,11 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     corsOrigins: origins.includes('*') ? '*' : origins,
     trustProxy: e.TRUST_PROXY,
     logRequests: e.LOG_REQUESTS,
+    rateLimitEnabled: e.RATE_LIMIT ?? e.NODE_ENV !== 'test',
     jwtSecret: e.JWT_SECRET ?? '',
     sessionTtlSeconds: e.SESSAO_DIAS * 24 * 60 * 60,
     magicLinkTtlMinutes: e.LINK_MAGICO_MINUTOS,
+    linkResendCooldownSeconds: e.LINK_REENVIO_SEGUNDOS,
     appUrl: e.APP_URL.replace(/\/+$/, ''),
     mail: { provider: e.EMAIL_PROVEDOR, from: e.EMAIL_REMETENTE, resendApiKey: e.RESEND_API_KEY },
   };

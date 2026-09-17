@@ -38,7 +38,8 @@ export function createApp(options: AppOptions): Express {
   app.use(
     cors({
       origin: options.corsOrigins,
-      exposedHeaders: ['X-Request-Id', 'RateLimit', 'RateLimit-Policy'],
+      // o frontend roda em outra origem: sem expor, ele não lê o Location do 201 nem o nome do arquivo exportado
+      exposedHeaders: ['X-Request-Id', 'RateLimit', 'RateLimit-Policy', 'Location', 'Content-Disposition'],
     }),
   );
   app.use(express.json({ limit: '100kb' }));
