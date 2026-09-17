@@ -1,0 +1,11 @@
+{
+  "//": "Typecheck de tudo, testes inclusive. O tsconfig.json exclui testes do build.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node", "vitest/globals"]
+  },
+  "include": ["src/**/*.ts", "prisma/**/*.ts", "vitest.config.mts", "vitest.integration.config.mts"],
+  "exclude": ["node_modules", "dist"]
+}

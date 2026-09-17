@@ -2,15 +2,22 @@
   "name": "dindin-backend",
   "version": "1.0.0",
   "private": true,
-  "main": "dist/server.js",
+  "main": "dist/main/server.js",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "tsx watch src/main/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/main/server.js",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.mts",
+    "motor:sync": "node scripts/sincronizar-motor.mjs",
+    "motor:check": "node scripts/sincronizar-motor.mjs --check",
+    "job:abrir-check-ins": "tsx src/main/jobs/abrir-check-ins.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio",
     "prisma:deploy": "prisma migrate deploy",
+    "prisma:studio": "prisma studio",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "postinstall": "prisma generate"
@@ -22,18 +29,28 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "8.7.0",
     "helmet": "^8.3.0",
+    "jsonwebtoken": "9.0.3",
     "morgan": "^1.12.1",
-    "pg": "^8.23.0"
+    "pg": "^8.23.0",
+    "zod": "4.6.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite-socket": "0.2.11",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "9.0.10",
     "@types/morgan": "^1.9.10",
     "@types/node": "^22.20.2",
     "@types/pg": "^8.23.1",
+    "@types/supertest": "7.2.1",
     "prisma": "7.10.0",
+    "supertest": "7.2.2",
     "tsx": "^4.23.13",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "8.3.0",
+    "vitest": "5.0.1"
   }
 }
