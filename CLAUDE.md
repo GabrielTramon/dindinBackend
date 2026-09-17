@@ -1,0 +1,134 @@
+# dindin — backend
+
+API do dindin: planejador financeiro gratuito em pt-BR. Monólito modular com clean architecture sobre Express 5, Prisma 7 (Postgres) e TypeScript 7. O frontend (`../dindinFrontend`) funciona sozinho com localStorage; esta API é o que permite salvar o plano, receber o e-mail mensal e usar em mais de um aparelho.
+
+## Comandos
+
+- `yarn dev` (tsx watch) · `yarn build` · `yarn start`
+- `yarn test` (vitest, rápido, sem banco) · `yarn typecheck` (inclui testes e `prisma/`)
+- `yarn test:integration` — `*.integration.test.ts` contra Postgres 18 de verdade (PGlite em WASM, sem Docker nem senha; ver `src/test/test-database.ts`)
+- `yarn motor:sync` / `yarn motor:check` — ver "Motor" abaixo
+- `yarn prisma:generate` · `yarn prisma:deploy` · `yarn db:seed`
+- CLIs sempre via `npx` — o shim do Yarn 1 quebra com o espaço no caminho do usuário. `yarn add` e `yarn <script>` funcionam.
+- Subir sem banco: `PERSISTENCIA=memoria JWT_SECRET=<32+ chars> yarn dev`. O link mágico aparece no terminal (`EMAIL_PROVEDOR=console`).
+
+## Arquitetura
+
+```
+src/
+  main/                 composição: config, container, routes, app, server, jobs — o ÚNICO lugar que escolhe implementações
+  shared/
+    domain/             errors (AppError e subclasses), guards
+    application/        ports (Clock, IdGenerator, TransactionManager, AuthTokenService, SecureTokenGenerator, Mailer), pagination, use-case
+    infra/              database (PrismaDatabase + transação via AsyncLocalStorage), http, security, mail, system, in-memory (dublês)
+    motor/              GERADO a partir do frontend. Não edite.
+  modules/<modulo>/
+    index.ts            API pública: SÓ contratos (entidades, interfaces de repositório, tipos, constantes)
+    infra.ts            adaptadores + create<Modulo>Module(deps) — só o main importa
+    domain/             entidade(s) + interface do repositório
+    application/        casos de uso (um por arquivo) + ports.ts (o que o módulo precisa de fora)
+    infra/database/     mapper, Prisma<X>Repository, InMemory<X>Repository, <x>-repository.contract.ts
+    infra/http/         <modulo>.routes.ts, <modulo>.schemas.ts, <x>.presenter.ts
+  test/kit.ts           createTestKit(): portas em memória + app com o pipeline de produção
+```
+
+**Módulo de referência: `modules/categorias`.** Todo módulo novo segue a mesma forma, os mesmos nomes de arquivo e o mesmo estilo de teste.
+
+### Regra de dependência
+
+- `domain` não importa nada de `application` nem `infra`. Pode importar `shared/domain` e `shared/motor`.
+- `application` importa `domain` e `shared/application`. Nunca Express, Prisma ou zod de HTTP.
+- `infra` implementa as interfaces de `domain`/`application`.
+- **Entre módulos, só pelo `index.ts`** (`import type { CategoriasRepository } from '../../categorias'`). Nunca `../../categorias/infra/...` nem `../../categorias/domain/...`.
+- O grafo não tem ciclo:
+  ```
+  identidade, categorias, dividas, metas, planos → (nenhum módulo)
+  gastos-fixos → categorias
+  perfil       → categorias, gastos-fixos, dividas
+  check-ins    → planos, identidade
+  privacidade  → todos
+  ```
+  Quando um módulo precisa de algo de outro sem poder importá-lo, ele declara uma porta em `application/ports.ts` e o main liga:
+  - `gastos-fixos` e `dividas` perguntam se o perfil existe via `PerfilGateway` (perfil depende deles, então não podem importar perfil);
+  - `planos` recebe o perfil completo no formato do motor via `PerfilDoMotorReader`, ligado ao `CarregarPerfilDoMotorUseCase` de `perfil`.
+- **Tudo isso é verificado por `src/test/architecture.test.ts`** (roda no `yarn test`). Módulo novo ou aresta nova: atualize o `GRAFO` de lá e este diagrama juntos.
+
+### Nomes
+
+- **Vocabulário do negócio em pt-BR**: `Categoria`, `Perfil`, `GastoFixo`, `Meta`, `renomear`, `consumirLinkMagico`, `CriarCategoriaPersonalizadaUseCase`.
+- **Palavras de padrão técnico em inglês**: `Repository`, `UseCase`, `Mapper`, `Presenter`, métodos de repositório (`findById`, `save`, `listBySubscriber`, `deleteAllBySubscriber`), portas (`Clock`, `Mailer`), erros (`NotFoundError`).
+- Props das entidades usam os nomes de campo do `schema.prisma` (exceção documentada: `Subscriber.tokenHash` ↔ coluna `token`; `subscriberId` ↔ `profileId` em gastos e dívidas).
+- Arquivos em kebab-case: `renomear-categoria.use-case.ts`, `prisma-categorias-repository.ts`.
+- Estilo: aspas simples, ponto e vírgula, 2 espaços. Comentário explica o porquê, em pt-BR.
+
+### Entidades
+
+- Construtor privado. `criar(...)` valida invariantes; `restaurar(props)` reconstrói do banco sem validar.
+- Getters pros campos; métodos com nome de comportamento pra mudar estado. Nada de setter.
+- `restaurar` e `toSnapshot` usam `structuredClone` (cópia profunda: Date e objetos aninhados inclusive).
+- `atualizar(dados)` monta o objeto validado **campo a campo**. Nunca espalhe a entrada (`{...dados}`): uma chave extra vinda do chamador (`subscriberId`, `id`) trocaria o dono.
+- Quando o motor já tem a regra (`shared/motor/schema.ts`), valide COM o schema do motor (`validateField(perfilSchema.shape.idade, …)`) — mesmos limites e mensagens do frontend.
+- **Dinheiro**: `isValidMoney` / `ensureMoneyPrecision` / `hasAtMostDecimals` de `shared/domain/guards`. No máximo 2 casas (taxa: 4). **Nunca** `Math.round(v * 100) === v * 100` — erro de ponto flutuante recusava 13% dos valores válidos (R$ 19,99). O motor não limita casas; a entidade limita, senão o Decimal do banco arredonda calado e a memória diverge.
+- Datas vêm de fora (`agora: Date`), nunca `new Date()` dentro do domínio.
+
+### Casos de uso
+
+- Classe `<Acao>UseCase implements UseCase<Input, Output>`, dependências no construtor (interfaces), um `execute`.
+- Recebem `subscriberId` do chamador e **nunca** confiam em id de dono vindo do corpo.
+- Recurso de outra pessoa responde `NotFoundError` (igual a inexistente — não confirma que o id existe).
+- Escrita em mais de um repositório → `transactions.run(async () => { ... })`.
+- **Dentro de `run`, nunca capture erro de banco e siga**: no Postgres, depois de qualquer erro a transação fica abortada (25P02) e toda consulta seguinte falha — a memória não mostra isso. Pra tentar de novo (ex.: versão concorrente), repita o `run` inteiro.
+- "Uso único" e "não duplicar sob concorrência" não se garantem com ler-e-depois-gravar: use o método compare-and-set do repositório (`saveMagicLinkConsumption`, `claimSend`) ou a constraint do banco.
+- Lançam `AppError` (`ValidationError` 400, `UnauthorizedError` 401, `ForbiddenError` 403, `NotFoundError` 404, `ConflictError` 409, `BusinessRuleError` 422). Mensagem em pt-BR pronta pra tela; `details` por campo quando fizer sentido.
+- Não mutam a entidade antes de terminar as checagens que podem falhar.
+
+### Repositórios
+
+- Todo repositório tem **três** arquivos: interface (domain), Prisma, em memória — e um **contrato** (`<x>-repository.contract.ts`) rodado contra a versão em memória (`in-memory-<x>-repository.test.ts`) e, quando há banco, contra a Prisma (`*.integration.test.ts`).
+- Métodos que recebem `subscriberId` filtram por ele. Não existe `findById(id)` sem dono em recurso privado.
+- Prisma: pegue o cliente com `this.db.client` a cada operação (pode ser a transação em andamento). Converta violações com `prisma-errors.ts`: unique → `ConflictError`, FK → `ConflictError`/`BusinessRuleError`, not found em delete → ignore.
+- Enums: banco MAIÚSCULO (`CASA`), domínio e API minúsculo (`casa`), convertidos no mapper. Dinheiro: `Decimal` ⇄ `number` via `shared/infra/database/decimal.ts`.
+- **Não use `equals` + `mode: 'insensitive'`** do Prisma: vira `ILIKE` sem escapar curinga ("C%" casou com "Clube", provado). Compare em JS quando o conjunto é pequeno, ou normalize numa coluna.
+- `replaceAll` (troca a lista inteira do perfil) trava a linha do perfil antes do delete — `SELECT 1 FROM profiles WHERE subscriber_id = $1 FOR NO KEY UPDATE` — dentro de `this.db.transaction(...)`. Sem isso, dois PUTs simultâneos somam as listas (provado em Postgres real).
+- Paginação: decodifique o cursor com `decodeIntCursor` / `decodeCursor(c, validador)` de `shared/application/pagination`. Cursor lixo vira 400, nunca `NaN` no banco.
+- Ordem com empate (mesmo `criadoEm` depois de `replaceAll`): desempate por `id` nas duas implementações.
+- Em memória: guarda **`structuredClone`** do snapshot, devolve instâncias novas via `restaurar`, emula unique/FK que o caso de uso depende (inclusive em operações em lote, "todas ou nenhuma"), ordena igual à consulta Prisma. Dependência de outro repositório entra por callback no construtor (ex.: `isInUse`), ligado pelo container.
+
+### HTTP
+
+- Router por módulo, montado em `/api/v1`, com caminhos completos (`/perfil/gastos-fixos/:id`).
+- Handler: `parseParams`/`parseBody`/`parseQuery` (zod) → caso de uso → presenter. Sem regra de negócio no handler. Express 5 já repassa exceção assíncrona pro error handler — não use try/catch pra responder erro.
+- Autenticação: `deps.auth.requireAuth` ou `optionalAuth`; dono via `authOf(req).subscriberId`. Os dois conferem se a conta ainda existe (conta excluída = 401) e `optionalAuth` já manda `Vary: Authorization` — rota pública com `Cache-Control: public` precisa dele.
+- Recurso que referencia outro por id vindo do cliente (gasto → categoria) confere que o referenciado é visível pra pessoa (`categoria.ehVisivelPara(subscriberId)`), senão 404. A FK do banco não impede apontar pra categoria de outra pessoa.
+- Schema HTTP confere formato e tetos; regra fica no domínio.
+- JSON de resposta em camelCase pt-BR, enums minúsculos, datas ISO. Lista: `{ items, nextCursor? }`. Criação: `201` + `Location`. Exclusão: `204`.
+- Erro sempre `{ error: { code, message, details?, requestId } }`.
+- Presenter nunca expõe `subscriberId`, hash de token nem campo interno.
+
+### Testes
+
+- `yarn test` roda sem banco: domínio, casos de uso (repositórios em memória), contratos em memória e HTTP (supertest em `createTestKit().app(...)`).
+- Relógio fixo (`FixedClock`), ids sequenciais (`SequentialIdGenerator`), e-mail em memória (`InMemoryMailer`). Nada de `vi.useFakeTimers` pra data de negócio.
+- Todo endpoint testa: sucesso, sem token (401), recurso de outra pessoa (404), entrada inválida (400) e a regra principal de negócio. Termine o arquivo de rotas conferindo `kit.unexpectedErrors` vazio.
+- **Integração** (`yarn test:integration`): todo `Prisma<X>Repository` roda a MESMA suíte de contrato da versão em memória, num `prisma-<x>-repository.integration.test.ts` (modelo: `modules/categorias/infra/database/`). Um banco por arquivo (`startTestDatabase` no `beforeAll`), `db.reset()` antes de cada teste (o harness do contrato chama), `src/test/fixtures.ts` pra linhas que só satisfazem FK.
+- PGlite é **uma sessão só**: não reproduz concorrência (corridas, locks, isolamento). Teste de corrida não vai em integração; documente a garantia no código e confie na constraint do banco.
+
+## Motor
+
+`src/shared/motor/` é cópia de `dindinFrontend/src/domain` + `src/lib/format.ts`, gerada por `yarn motor:sync` (com os testes). É o que permite gerar o plano no servidor sem confiar no cliente. **Não edite aqui**: mude no frontend e sincronize. `yarn motor:check` falha se as cópias divergirem — rode no CI.
+
+## Produto (não negociável)
+
+- Sem senha: login por link mágico. O token só existe no e-mail; o banco guarda o SHA-256. Link é de uso único (compare-and-set) e expira.
+- **Tokens vão no fragmento da URL, nunca na query**: `${APP_URL}/entrar#token=…`, `${APP_URL}/descadastrar#token=…`. O fragmento não chega em servidor, log, `Referer` nem script de anúncio/analytics.
+- Pedido de link: resposta sempre 202 (não revela se o e-mail existe) e sem reenvio se o último link do endereço saiu há menos de 60 s (`Subscriber.linkEmitidoEm`) — além do rate limit por IP.
+- E-mail mensal só pra quem confirmou o endereço (`emailVerificadoEm`) e está `ativo`. O job reserva o envio com `claimSend` antes de mandar e desfaz com `releaseSendClaim` se falhar: execuções sobrepostas não duplicam e-mail.
+- LGPD: exportar e excluir tudo (módulo `privacidade`). Exclusão é física, não flag, numa transação, apagando na ordem das FKs: gastos fixos → dívidas → perfil → categorias personalizadas → planos, metas, check-ins → subscriber.
+- Nunca recomendar produto, banco, corretora ou emissor em nenhum texto.
+- Dinheiro sem centavo quebrado: no máximo 2 casas.
+
+## Banco
+
+- Migrations em `prisma/migrations`, SQL escrito/revisado à mão quando há rename (Prisma gera DROP+ADD).
+- O catálogo de categorias é semeado na migration e reaplicável com `yarn db:seed` (lê do motor).
+- `.env` do usuário tem a senha do Postgres local como placeholder: não tente adivinhar. Sem banco, use `PERSISTENCIA=memoria`.
