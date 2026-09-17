@@ -9,6 +9,9 @@ import type { Perfil as PerfilDoMotor, Plano as PlanoDoMotor } from '../../../sh
 
 export type { PerfilDoMotor, PlanoDoMotor };
 
+/** Teto do INTEGER do Postgres (coluna versao). Acima disso o banco recusa a consulta. */
+export const MAX_VERSAO = 2_147_483_647;
+
 export interface VersaoPlanoProps {
   id: string;
   subscriberId: string;
@@ -20,12 +23,37 @@ export interface VersaoPlanoProps {
   criadoEm: Date;
 }
 
+/**
+ * O valor no formato em que volta do JSONB: chave com `undefined` some e -0 vira 0.
+ *
+ * Sem isso, a memória guardaria `{ parcela: undefined }` e o Postgres não — a
+ * comparação "o perfil mudou desde a última versão?" daria respostas
+ * diferentes nos dois modos, e recalcular sem mudança criaria versão só no
+ * banco. O motor só produz números, textos, booleanos, null e listas, então
+ * a ida e volta por JSON não perde nada.
+ */
+export function normalizarComoJson<T>(valor: T): T {
+  return JSON.parse(JSON.stringify(valor)) as T;
+}
+
 export class VersaoPlano {
   private constructor(private readonly props: VersaoPlanoProps) {}
 
   static criar(input: VersaoPlanoProps): VersaoPlano {
-    ensure(Number.isInteger(input.versao) && input.versao >= 1, 'versao', 'Versão inválida');
-    return new VersaoPlano(structuredClone(input));
+    ensure(
+      Number.isInteger(input.versao) && input.versao >= 1 && input.versao <= MAX_VERSAO,
+      'versao',
+      'Versão inválida',
+    );
+    // campo a campo: chave extra vinda do chamador não entra na versão gravada
+    return new VersaoPlano({
+      id: input.id,
+      subscriberId: input.subscriberId,
+      versao: input.versao,
+      inputSnap: normalizarComoJson(input.inputSnap),
+      resultado: normalizarComoJson(input.resultado),
+      criadoEm: new Date(input.criadoEm),
+    });
   }
 
   static restaurar(props: VersaoPlanoProps): VersaoPlano {
