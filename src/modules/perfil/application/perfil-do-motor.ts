@@ -60,13 +60,16 @@ export function montarPerfilDoMotor(
   - "outro" + nome → nome igual (sem maiúsculas) a uma do catálogo? usa a do catálogo;
     a uma personalizada da pessoa? reaproveita; senão, categoria nova;
   - linhas que caem na mesma categoria são SOMADAS (a primeira dá o nome e a posição).
+
+  `indice` é a posição da primeira linha do grupo na lista recebida: erro no valor
+  somado aponta pra uma linha que a pessoa enxerga, não pra posição depois da soma.
 */
 
 type GastoDoMotor = PerfilDoMotor['gastosFixos'][number];
 
 export type GastoResolvido =
-  | { tipo: 'existente'; categoria: Categoria; valor: number }
-  | { tipo: 'nova'; nome: string; valor: number };
+  | { tipo: 'existente'; categoria: Categoria; valor: number; indice: number }
+  | { tipo: 'nova'; nome: string; valor: number; indice: number };
 
 function comCaminho(error: unknown, indice: number): never {
   if (error instanceof ValidationError && error.details) {
@@ -94,7 +97,7 @@ export function resolverGastosDoMotor(gastos: readonly GastoDoMotor[], visiveis:
       if (!categoria) {
         throw new ValidationError('Categoria desconhecida.', { [`gastosFixos.${i}.categoria`]: 'Categoria desconhecida' });
       }
-      resolvido = { tipo: 'existente', categoria, valor: gasto.valor };
+      resolvido = { tipo: 'existente', categoria, valor: gasto.valor, indice: i };
     } else {
       let nome: string;
       try {
@@ -104,8 +107,8 @@ export function resolverGastosDoMotor(gastos: readonly GastoDoMotor[], visiveis:
       }
       const existente = doCatalogoPorNome.get(chave(nome)) ?? propriasPorNome.get(chave(nome));
       resolvido = existente
-        ? { tipo: 'existente', categoria: existente, valor: gasto.valor }
-        : { tipo: 'nova', nome, valor: gasto.valor };
+        ? { tipo: 'existente', categoria: existente, valor: gasto.valor, indice: i }
+        : { tipo: 'nova', nome, valor: gasto.valor, indice: i };
     }
 
     const k = resolvido.tipo === 'existente' ? `id:${resolvido.categoria.id}` : `nova:${chave(resolvido.nome)}`;

@@ -86,6 +86,20 @@ describe('resolverGastosDoMotor', () => {
     expect(resumo(r)).toEqual(['cat-academia=150', 'nova:Clube=80', 'cat-mercado=450']);
   });
 
+  it('cada grupo guarda a posição da PRIMEIRA linha na lista recebida, não a posição depois da soma', () => {
+    const r = resolverGastosDoMotor(
+      [
+        { categoria: 'mercado', valor: 400 },
+        { categoria: 'outro', nome: 'Mercado', valor: 50 },
+        { categoria: 'outro', nome: 'Clube', valor: 80 },
+        { categoria: 'outro', nome: 'clube', valor: 20 },
+        { categoria: 'academia', valor: 120 },
+      ],
+      CATALOGO,
+    );
+    expect(r.map((g) => g.indice)).toEqual([0, 2, 4]);
+  });
+
   it('"outro" sem nome → ValidationError no caminho da linha', () => {
     try {
       resolverGastosDoMotor([{ categoria: 'mercado', valor: 1 }, { categoria: 'outro', nome: '   ', valor: 10 }], CATALOGO);
