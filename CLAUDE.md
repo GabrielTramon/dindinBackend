@@ -9,6 +9,9 @@ API do dindin: planejador financeiro gratuito em pt-BR. Monólito modular com cl
 - `yarn test:integration` — `*.integration.test.ts` contra Postgres 18 de verdade (PGlite em WASM, sem Docker nem senha; ver `src/test/test-database.ts`)
 - `yarn motor:sync` / `yarn motor:check` — ver "Motor" abaixo
 - `yarn prisma:generate` · `yarn prisma:deploy` · `yarn db:seed`
+- `yarn db:check-migrations` — aplica `prisma/migrations` num PGlite e compara com o `schema.prisma` (sai com 1 e mostra o SQL). No Prisma 7 não existe `--shadow-database-url`: o script escreve um prisma config temporário com `datasource.shadowDatabaseUrl`
+- `yarn job:abrir-check-ins` — o job do dia 1 (`src/main/jobs/`); agendar depois das 03:00 UTC
+- Antes de entregar: `yarn typecheck && yarn test && yarn test:integration && yarn build && yarn motor:check && yarn db:check-migrations`
 - CLIs sempre via `npx` — o shim do Yarn 1 quebra com o espaço no caminho do usuário. `yarn add` e `yarn <script>` funcionam.
 - Subir sem banco: `PERSISTENCIA=memoria JWT_SECRET=<32+ chars> yarn dev`. O link mágico aparece no terminal (`EMAIL_PROVEDOR=console`).
 
@@ -24,12 +27,13 @@ src/
     motor/              GERADO a partir do frontend. Não edite.
   modules/<modulo>/
     index.ts            API pública: SÓ contratos (entidades, interfaces de repositório, tipos, constantes)
-    infra.ts            adaptadores + create<Modulo>Module(deps) — só o main importa
+    infra.ts            adaptadores + create<Modulo>Module(deps) — só o main (e testes) importam
     domain/             entidade(s) + interface do repositório
     application/        casos de uso (um por arquivo) + ports.ts (o que o módulo precisa de fora)
     infra/database/     mapper, Prisma<X>Repository, InMemory<X>Repository, <x>-repository.contract.ts
     infra/http/         <modulo>.routes.ts, <modulo>.schemas.ts, <x>.presenter.ts
   test/kit.ts           createTestKit(): portas em memória + app com o pipeline de produção
+  test/e2e-fluxo.ts     o fluxo ponta a ponta com a composição real (main), rodado em memória e no Postgres
 ```
 
 **Módulo de referência: `modules/categorias`.** Todo módulo novo segue a mesma forma, os mesmos nomes de arquivo e o mesmo estilo de teste.
@@ -40,6 +44,8 @@ src/
 - `application` importa `domain` e `shared/application`. Nunca Express, Prisma ou zod de HTTP.
 - `infra` implementa as interfaces de `domain`/`application`.
 - **Entre módulos, só pelo `index.ts`** (`import type { CategoriasRepository } from '../../categorias'`). Nunca `../../categorias/infra/...` nem `../../categorias/domain/...`.
+  - Exceção só pra **teste** (`*.test.ts`, `*.contract.ts`, `src/test/`): pode importar o `infra.ts` do vizinho (`../../categorias/infra`) pra usar o repositório em memória ou Prisma de verdade — nunca o interior dele, e só nas arestas do grafo. Prefira isso a um dublê local do repositório do vizinho (dublê fora de `*.test.ts` ainda entra no `dist`).
+  - `main/` usa módulos só pelo `index.ts` ou pelo `infra.ts`.
 - O grafo não tem ciclo:
   ```
   identidade, categorias, dividas, metas, planos → (nenhum módulo)
@@ -112,6 +118,7 @@ src/
 - Todo endpoint testa: sucesso, sem token (401), recurso de outra pessoa (404), entrada inválida (400) e a regra principal de negócio. Termine o arquivo de rotas conferindo `kit.unexpectedErrors` vazio.
 - **Integração** (`yarn test:integration`): todo `Prisma<X>Repository` roda a MESMA suíte de contrato da versão em memória, num `prisma-<x>-repository.integration.test.ts` (modelo: `modules/categorias/infra/database/`). Um banco por arquivo (`startTestDatabase` no `beforeAll`), `db.reset()` antes de cada teste (o harness do contrato chama), `src/test/fixtures.ts` pra linhas que só satisfazem FK.
 - PGlite é **uma sessão só**: não reproduz concorrência (corridas, locks, isolamento). Teste de corrida não vai em integração; documente a garantia no código e confie na constraint do banco.
+- **Ponta a ponta** (`src/test/e2e-fluxo.ts`): a composição real (`loadConfig` → `createContainer(config, { mailer, clock })` → `createApp` + `mountModules`), rodada em `e2e.test.ts` (memória) e `e2e.integration.test.ts` (Prisma sobre `startTestDatabase().url`). Endpoint ou ligação nova no main: acrescente um passo ao fluxo, não um e2e paralelo.
 
 ## Motor
 
