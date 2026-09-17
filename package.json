@@ -20,6 +20,7 @@
     "prisma:studio": "prisma studio",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
+    "db:check-migrations": "node scripts/checar-migrations.mjs",
     "postinstall": "prisma generate"
   },
   "packageManager": "yarn@1.22.22",
