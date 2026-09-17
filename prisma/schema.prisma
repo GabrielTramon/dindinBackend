@@ -30,14 +30,20 @@ datasource db {
 model Subscriber {
   id    String @id @default(uuid())
   email String @unique
-  /// token do link mágico do e-mail mensal; rotacionado a cada envio
-  token String @unique
+  /// SHA-256 do token do link mágico — o token em si só existe no e-mail.
+  /// Rotacionado a cada envio e trocado por um valor inutilizável depois de usado.
+  token         String    @unique
+  tokenExpiraEm DateTime? @map("token_expira_em")
+
+  /// preenchido no primeiro link mágico usado; sem isso a pessoa nunca recebe
+  /// o e-mail mensal — o endereço pode ter sido digitado por outra pessoa
+  emailVerificadoEm DateTime? @map("email_verificado_em")
 
   /// descadastro em um clique: mantém o histórico, para de enviar
   ativo Boolean @default(true)
 
-  criadoEm     DateTime @default(now())
-  atualizadoEm DateTime @updatedAt
+  criadoEm     DateTime @default(now()) @map("criado_em")
+  atualizadoEm DateTime @updatedAt @map("atualizado_em")
 
   perfil     Profile?
   categorias CategoriaGastoFixo[]
