@@ -95,6 +95,18 @@ export class Subscriber {
   }
 
   /**
+   * Anula o link pendente SEM confirmar o e-mail. Serve pro envio que falhou: o
+   * link nunca chegou, e deixá-lo pendente faria o próximo pedido cair no limite
+   * de reenvio por um link que ninguém recebeu. Mesmo valor do consumo, pelo mesmo
+   * motivo (coluna UNIQUE NOT NULL).
+   */
+  invalidarLinkMagico(agora: Date): void {
+    this.props.tokenHash = `${PREFIXO_TOKEN_CONSUMIDO}${this.props.id}`;
+    this.props.tokenExpiraEm = null;
+    this.props.atualizadoEm = agora;
+  }
+
+  /**
    * Quando o link atual foi emitido, deduzido da validade. null sem link pendente.
    * Serve pra não reenviar link a cada clique (limite por endereço).
    */

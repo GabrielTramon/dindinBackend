@@ -74,4 +74,68 @@ describe('Subscriber', () => {
   it.each(['', 'sem-arroba', 'a@b', `${'x'.repeat(250)}@x.dev`])('e-mail inválido %j', (email) => {
     expect(() => normalizarEmail(email)).toThrow(ValidationError);
   });
+
+  it('invalidar o link (envio falhou) inutiliza o token sem confirmar o e-mail', () => {
+    const s = novo('s1');
+    const depois = new Date('2026-09-17T12:00:05.000Z');
+    s.invalidarLinkMagico(depois);
+    expect(s.tokenHash).toBe(`${PREFIXO_TOKEN_CONSUMIDO}s1`);
+    expect(s.tokenExpiraEm).toBeNull();
+    expect(s.emailVerificadoEm).toBeNull();
+    expect(s.atualizadoEm).toEqual(depois);
+    // sem link pendente: o próximo pedido não fica preso no limite de reenvio
+    expect(s.linkEmitidoEm(15)).toBeNull();
+    expect(() => s.consumirLinkMagico(depois)).toThrow(UnauthorizedError);
+  });
+
+  it('invalidar depois de verificado mantém a verificação', () => {
+    const s = novo('s1');
+    s.consumirLinkMagico(agora);
+    s.emitirLinkMagico('hash-novo', emQuinzeMin, agora);
+    s.invalidarLinkMagico(agora);
+    expect(s.emailVerificadoEm).toEqual(agora);
+    expect(s.podeReceberEmail).toBe(true);
+  });
+
+  it('link novo depois de consumido volta a funcionar, e só até vencer', () => {
+    const s = novo('s1');
+    s.consumirLinkMagico(agora);
+    const emissao = new Date('2026-09-18T08:00:00.000Z');
+    s.emitirLinkMagico('hash-novo', new Date('2026-09-18T08:15:00.000Z'), emissao);
+    expect(s.tokenHash).toBe('hash-novo');
+    expect(s.linkEmitidoEm(15)).toEqual(emissao);
+    // no instante exato do vencimento ainda vale
+    expect(() => s.consumirLinkMagico(new Date('2026-09-18T08:15:00.000Z'))).not.toThrow();
+  });
+
+  it('descadastrada ainda consegue entrar pelo link', () => {
+    const s = novo('s1');
+    s.descadastrar(agora);
+    expect(() => s.consumirLinkMagico(agora)).not.toThrow();
+    expect(s.ativo).toBe(false);
+  });
+
+  it('descadastrar e reativar repetidos não mexem em atualizadoEm', () => {
+    const s = novo('s1');
+    const depois = new Date('2026-09-20T00:00:00.000Z');
+    s.reativar(depois);
+    expect(s.atualizadoEm).toEqual(agora);
+    s.descadastrar(depois);
+    s.descadastrar(new Date('2026-09-21T00:00:00.000Z'));
+    expect(s.atualizadoEm).toEqual(depois);
+  });
+
+  it('restaurar e toSnapshot copiam: mexer na origem ou na cópia não altera a entidade', () => {
+    const props = novo('s1').toSnapshot();
+    const s = Subscriber.restaurar(props);
+    props.email = 'outra@x.dev';
+    props.tokenExpiraEm?.setFullYear(1990);
+    const snap = s.toSnapshot();
+    snap.ativo = false;
+    snap.criadoEm.setFullYear(1990);
+    expect(s.email).toBe('s1@x.dev');
+    expect(s.tokenExpiraEm).toEqual(emQuinzeMin);
+    expect(s.ativo).toBe(true);
+    expect(s.criadoEm).toEqual(agora);
+  });
 });
