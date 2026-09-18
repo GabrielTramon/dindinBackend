@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { executarFluxoCompleto, montarAmbiente, type AmbienteE2E } from './e2e-fluxo';
+import { executarFluxoCompleto, montarAmbiente, PASSOS_DO_FLUXO, type AmbienteE2E } from './e2e-fluxo';
 import { startTestDatabase, type TestDatabase } from './test-database';
 
 /*
@@ -30,7 +30,8 @@ afterAll(async () => {
 describe('e2e (Postgres)', () => {
   it('o fluxo completo, e no banco sobram só as linhas do Bruno e o catálogo', async () => {
     const { ana, bruno, passos } = await executarFluxoCompleto(ambiente);
-    expect(passos).toHaveLength(21);
+    // a lista inteira, não a contagem: quando um passo entra, o diff diz qual
+    expect(passos).toEqual([...PASSOS_DO_FLUXO]);
 
     const p = db.prisma;
     expect(await p.subscriber.findMany({ select: { id: true } })).toEqual([{ id: bruno.id }]);
@@ -45,8 +46,12 @@ describe('e2e (Postgres)', () => {
       plans: await p.plan.count({ where: doBruno }),
       goals: await p.goal.count({ where: doBruno }),
       checkIns: await p.checkIn.count({ where: doBruno }),
-    }).toEqual({ profiles: 1, gastosFixos: 2, dividas: 0, plans: 1, goals: 1, checkIns: 1 });
+      grupos: await p.grupo.count({ where: doBruno }),
+      itensGrupo: await p.itemGrupo.count({ where: doBruno }),
+    }).toEqual({ profiles: 1, gastosFixos: 2, dividas: 0, plans: 1, goals: 1, checkIns: 1, grupos: 1, itensGrupo: 1 });
 
+    // os itens contados à parte: a exclusão apaga item antes de grupo, e uma linha
+    // de itens_grupo órfã não apareceria na contagem de grupos
     expect({
       profiles: await p.profile.count({ where: deOutros }),
       gastosFixos: await p.gastoFixo.count({ where: { profileId: { not: bruno.id } } }),
@@ -54,7 +59,9 @@ describe('e2e (Postgres)', () => {
       plans: await p.plan.count({ where: deOutros }),
       goals: await p.goal.count({ where: deOutros }),
       checkIns: await p.checkIn.count({ where: deOutros }),
-    }).toEqual({ profiles: 0, gastosFixos: 0, dividas: 0, plans: 0, goals: 0, checkIns: 0 });
+      grupos: await p.grupo.count({ where: deOutros }),
+      itensGrupo: await p.itemGrupo.count({ where: deOutros }),
+    }).toEqual({ profiles: 0, gastosFixos: 0, dividas: 0, plans: 0, goals: 0, checkIns: 0, grupos: 0, itensGrupo: 0 });
 
     // as 24 do catálogo, e nenhuma personalizada (a "Clube" da Ana foi junto)
     expect(await p.categoriaGastoFixo.count()).toBe(24);

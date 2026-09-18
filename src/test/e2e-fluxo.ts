@@ -9,6 +9,8 @@ import { mountModules } from '../main/routes';
 import type { ErrorLogger } from '../shared/infra/http/error-handler';
 import { FixedClock, InMemoryMailer } from '../shared/infra/in-memory/doubles';
 import { MAX_PAGE_LIMIT } from '../shared/application/pagination';
+import { PROPORCAO_APORTE } from '../shared/motor/config';
+import { arredondar } from '../shared/motor/format';
 import { TEST_JWT_SECRET } from './kit';
 
 /*
@@ -26,6 +28,39 @@ import { TEST_JWT_SECRET } from './kit';
 */
 
 export const APP_URL_E2E = 'https://dindin.app';
+
+/**
+ * Os passos do fluxo, na ordem em que acontecem. Os dois arquivos de e2e
+ * (memória e Postgres) conferem esta lista inteira em vez de contar: quando um
+ * passo entra, sai ou muda de nome, o diff do teste diz QUAL — `toHaveLength(21)`
+ * só dizia "22 ≠ 21" e mandava a pessoa procurar.
+ */
+export const PASSOS_DO_FLUXO = [
+  'a API está de pé e a persistência responde',
+  'Ana pede o link, o reenvio em menos de 60 s é segurado, e ela entra',
+  'sem perfil: gerar plano é 422 e adicionar gasto é 422',
+  'PUT /perfil/completo com o perfil do onboarding do frontend',
+  'GET /perfil/completo e GET /perfil devolvem o que ficou gravado',
+  'mandar o mesmo perfil de novo não muda nada e mantém os ids dos gastos',
+  'CRUD de /perfil/gastos-fixos',
+  'CRUD de /perfil/dividas',
+  'o perfil completo reflete o CRUD',
+  'POST /planos cria a versão 1 (201) e de novo devolve a mesma (200)',
+  'perfil muda → POST /planos cria a versão 2; histórico e atual acompanham',
+  'meta: criar, publicar e ver a página pública sem token e sem valores em reais',
+  'Bruno entra no meio, monta o perfil, gera plano e cria meta',
+  'Bruno não enxerga nem mexe em nada da Ana (404, igual a inexistente)',
+  'PUT /check-ins do mês anterior compara com a versão que valia naquele mês',
+  'salário bruto, dependentes, ritmo e meta atravessam o perfil e chegam no plano',
+  'plano novo não reescreve o passado: o check-in de agosto continua igual',
+  'PUT /organizacao guarda a árvore de grupos, e o PUT seguinte substitui ela inteira',
+  'job do dia 1 abre setembro e manda o e-mail com descadastro no fragmento; rodar de novo não duplica',
+  'descadastro pelo link do e-mail: sessão não serve como token; o do e-mail vale e é idempotente',
+  'GET /me/exportar traz tudo da Ana e nada do Bruno',
+  'DELETE /me exige a confirmação; com ela apaga, e a mesma sessão passa a dar 401',
+  'Bruno continua intacto',
+  'nenhuma resposta vazou id de outra pessoa, hash de token ou campo interno',
+] as const;
 
 export interface AmbienteE2E {
   container: Container;
@@ -133,6 +168,9 @@ export interface RetratoDaConta {
   metas: number;
   checkIns: number;
   categoriasPersonalizadas: number;
+  grupos: number;
+  /** contados à parte do grupo: é o que um cascade esquecido deixaria pra trás */
+  itensDeGrupo: number;
 }
 
 export const CONTA_INEXISTENTE: RetratoDaConta = {
@@ -144,11 +182,13 @@ export const CONTA_INEXISTENTE: RetratoDaConta = {
   metas: 0,
   checkIns: 0,
   categoriasPersonalizadas: 0,
+  grupos: 0,
+  itensDeGrupo: 0,
 };
 
 export async function retratoDaConta(r: Repositories, subscriberId: string): Promise<RetratoDaConta> {
   const pagina = { limit: MAX_PAGE_LIMIT, cursor: null };
-  const [conta, perfil, gastos, dividas, planos, metas, checkIns, categorias] = await Promise.all([
+  const [conta, perfil, gastos, dividas, planos, metas, checkIns, categorias, grupos] = await Promise.all([
     r.subscribers.findById(subscriberId),
     r.perfis.exists(subscriberId),
     r.gastosFixos.listBySubscriber(subscriberId),
@@ -157,6 +197,7 @@ export async function retratoDaConta(r: Repositories, subscriberId: string): Pro
     r.metas.listBySubscriber(subscriberId),
     r.checkIns.list(subscriberId, pagina),
     r.categorias.listVisible(subscriberId),
+    r.grupos.listBySubscriber(subscriberId),
   ]);
   return {
     conta: conta !== null,
@@ -167,6 +208,8 @@ export async function retratoDaConta(r: Repositories, subscriberId: string): Pro
     metas: metas.length,
     checkIns: checkIns.items.length,
     categoriasPersonalizadas: categorias.filter((c) => !c.ehDoCatalogo).length,
+    grupos: grupos.length,
+    itensDeGrupo: grupos.reduce((total, grupo) => total + grupo.itens.length, 0),
   };
 }
 
@@ -257,8 +300,12 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
   const passos: string[] = [];
   const tokensMagicos: string[] = [];
 
-  /** cada passo acontece um minuto depois do anterior: datas de criação não empatam */
-  async function passo(nome: string, trabalho: () => Promise<void>): Promise<void> {
+  /**
+   * Cada passo acontece um minuto depois do anterior: datas de criação não
+   * empatam. O nome é tipado por PASSOS_DO_FLUXO — passo novo sem entrada na
+   * lista não compila, em vez de só mudar uma contagem.
+   */
+  async function passo(nome: (typeof PASSOS_DO_FLUXO)[number], trabalho: () => Promise<void>): Promise<void> {
     clock.advance(60_000);
     try {
       await trabalho();
@@ -310,9 +357,14 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
   let perfilAtual: unknown;
   let idsDosGastos: Record<string, string> = {};
   let idDaDividaDaAna = '';
-  let planoV2: { versao: number; resultado: { aporte: number; livre: number } } | undefined;
+  /** a versão que já existia quando agosto aconteceu: é com ela que o check-in de agosto compara */
+  let planoV1: { versao: number; resultado: { aporte: number; livre: number } } | undefined;
   let metaDaAna = { id: '', slug: '' };
   let tokenDescadastro = '';
+  /** o perfil completo depois do salário bruto, do ritmo e da meta (a entrada da versão 3) */
+  let perfilComRitmo: unknown;
+  /** o corpo do check-in de agosto, pra provar que uma versão nova de plano não o reescreve */
+  let checkInDeAgosto: unknown;
 
   await passo('a API está de pé e a persistência responde', async () => {
     await api.chamar('anonimo', 'get', '/api/health', { status: 200 });
@@ -505,6 +557,9 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect(criado.body).toMatchObject({ versao: 1, entrada: perfilAtual });
     // o servidor calcula com o que está salvo e chega no mesmo plano que a calculadora pública
     expect(criado.body.resultado).toEqual(simulado.body.resultado);
+    // guardada pro check-in de agosto: é a versão mais antiga, e é a que vale pra um mês
+    // anterior a todas elas (findEmVigorEm cai no fallback)
+    planoV1 = criado.body;
 
     clock.advance(60_000);
     const denovo = await api.chamar('ana', 'post', '/planos', { sessao: ana.sessao, status: 200 });
@@ -523,7 +578,6 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     const v2 = await api.chamar('ana', 'post', '/planos', { sessao: ana.sessao, status: 201 });
     expect(v2.headers.location).toBe('/api/v1/planos/2');
     expect(v2.body).toMatchObject({ versao: 2, entrada: perfilAtual });
-    planoV2 = v2.body;
 
     const atual = await api.chamar('ana', 'get', '/planos/atual', { sessao: ana.sessao, status: 200 });
     expect(atual.body.versao).toBe(2);
@@ -599,8 +653,15 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect(metas.body.items).toHaveLength(1);
   });
 
-  await passo('PUT /check-ins do mês anterior compara com o plano atual', async () => {
-    const plano = planoV2!;
+  await passo('PUT /check-ins do mês anterior compara com a versão que valia naquele mês', async () => {
+    /*
+      A Ana se cadastrou em setembro: quando agosto aconteceu, nenhuma das versões
+      dela existia ainda (todas nascem em 2026-09-17, depois de
+      fimDaCompetencia('2026-08') = 2026-09-01T03:00Z). findEmVigorEm cai no
+      fallback e compara com a MAIS ANTIGA — a versão 1 —, em vez de deixar a
+      pessoa sem comparação nenhuma.
+    */
+    const plano = planoV1!;
     const res = await api.chamar('ana', 'put', '/check-ins/2026-08', {
       sessao: ana.sessao,
       corpo: { rendaReal: 4800, gastoReal: 3350.4, guardadoReal: 700 },
@@ -620,9 +681,10 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
         guardadoReal: 700,
         diferenca,
         cumpriu: diferenca >= 0,
-        versaoDoPlano: 2,
+        versaoDoPlano: 1,
       },
     });
+    checkInDeAgosto = res.body;
 
     await api.chamar('ana', 'put', '/check-ins/2026-10', {
       sessao: ana.sessao,
@@ -633,6 +695,201 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect(obtido.body).toEqual(res.body);
     const lista = await api.chamar('ana', 'get', '/check-ins', { sessao: ana.sessao, status: 200 });
     expect(lista.body.items.map((c: { competencia: string }) => c.competencia)).toEqual(['2026-08']);
+  });
+
+  await passo('salário bruto, dependentes, ritmo e meta atravessam o perfil e chegam no plano', async () => {
+    /*
+      O teste que fecha a malha da seção E da especificação: os campos novos
+      passam pelo schema HTTP, pela entidade, pelo mapper, pelo presenter e pelo
+      inputSnap do plano. Cada um desses arquivos copia campo a campo, e um
+      esquecimento ali não dá erro de compilação — só some com a resposta da
+      pessoa. `rendaMensal` continua sendo o LÍQUIDO: o bruto é registro, o
+      servidor nunca recalcula o líquido a partir dele.
+    */
+    perfilComRitmo = {
+      ...(perfilAtual as object),
+      rendaInformada: 'bruta',
+      salarioBruto: 6000,
+      dependentes: 1,
+      competenciaTabela: '2026-01',
+      ritmo: 'acelerado',
+      // tipo do catálogo: sem `nome`, e a chave tem que continuar ausente na volta
+      meta: { tipo: 'carro', valorAlvo: 45000 },
+    };
+
+    const salvo = await api.chamar('ana', 'put', '/perfil/completo', {
+      sessao: ana.sessao,
+      corpo: perfilComRitmo as object,
+      status: 200,
+    });
+    expect(salvo.body).toEqual(perfilComRitmo);
+
+    // o round-trip inteiro: o que volta do GET é o corpo do próximo PUT
+    const completo = await api.chamar('ana', 'get', '/perfil/completo', { sessao: ana.sessao, status: 200 });
+    expect(completo.body).toEqual(perfilComRitmo);
+    const escalares = await api.chamar('ana', 'get', '/perfil', { sessao: ana.sessao, status: 200 });
+    expect(escalares.body).toMatchObject({
+      rendaMensal: 4800,
+      rendaInformada: 'bruta',
+      salarioBruto: 6000,
+      dependentes: 1,
+      competenciaTabela: '2026-01',
+      ritmo: 'acelerado',
+      meta: { tipo: 'carro', valorAlvo: 45000 },
+    });
+    expect(escalares.body.meta).not.toHaveProperty('nome');
+
+    const v3 = await api.chamar('ana', 'post', '/planos', { sessao: ana.sessao, status: 201 });
+    expect(v3.headers.location).toBe('/api/v1/planos/3');
+    expect(v3.body).toMatchObject({ versao: 3, entrada: perfilComRitmo });
+    // o ritmo chegou no motor: o plano diz com qual ritmo foi calculado…
+    expect(v3.body.resultado.ritmo).toBe('acelerado');
+    /*
+      …e o aporte é a fatia do acelerado neste degrau, limitada pelo piso. A
+      conta é feita com a tabela do motor (PROPORCAO_APORTE) e com o `piso` que o
+      próprio plano publica, não com um número escrito à mão: quando o produto
+      reajustar a proporção do acelerado, este passo continua provando a mesma
+      coisa — que o ritmo do perfil é o que decide o aporte — em vez de virar um
+      literal pra alguém atualizar no escuro.
+    */
+    const { degrau, resumo, aporte, piso } = v3.body.resultado;
+    expect(degrau).toBe(1);
+    expect(piso.sugerido).toBe(arredondar(resumo.excedente * PROPORCAO_APORTE.acelerado[degrau as 0 | 1 | 2 | 3 | 4]));
+    expect(aporte).toBe(arredondar(Math.min(piso.sugerido, piso.teto)));
+
+    /*
+      E o ritmo é entrada de verdade, não enfeite: o MESMO perfil no leve guarda
+      menos. Vai pela calculadora pública, que não grava versão nenhuma.
+    */
+    const noLeve = await api.chamar('anonimo', 'post', '/planos/simular', {
+      corpo: { ...(perfilComRitmo as object), ritmo: 'leve' },
+      status: 200,
+    });
+    expect(noLeve.body.resultado.ritmo).toBe('leve');
+    expect(noLeve.body.resultado.aporte).toBe(
+      arredondar(resumo.excedente * PROPORCAO_APORTE.leve[degrau as 0 | 1 | 2 | 3 | 4]),
+    );
+    expect(noLeve.body.resultado.aporte).toBeLessThan(aporte);
+
+    /*
+      E o valor escolhido a dedo — a pessoa editando o grupo "Guardar" — vence o
+      ritmo, inclusive nas projeções. É o caminho mais fácil de quebrar em
+      silêncio: são sete listas campo a campo entre o corpo do PATCH e o motor,
+      e o campo é opcional, então nenhuma delas quebra a compilação se esquecer.
+    */
+    const escolhido = arredondar(aporte + 100);
+    const comEscolha = await api.chamar('ana', 'patch', '/perfil', {
+      sessao: ana.sessao,
+      corpo: { aporteEscolhido: escolhido },
+      status: 200,
+    });
+    expect(comEscolha.body.aporteEscolhido).toBe(escolhido);
+
+    const v4 = await api.chamar('ana', 'post', '/planos', { sessao: ana.sessao, status: 201 });
+    expect(v4.body.entrada.aporteEscolhido).toBe(escolhido);
+    expect(v4.body.resultado.aporte).toBe(escolhido);
+    expect(v4.body.resultado.livre).toBe(arredondar(resumo.excedente - escolhido));
+    // o piso do ritmo não limita uma escolha explícita: quem avisa é a tela
+    expect(v4.body.resultado.piso.mordeu).toBe(false);
+  });
+
+  await passo('plano novo não reescreve o passado: o check-in de agosto continua igual', async () => {
+    /*
+      A regressão que a seção D conserta: a comparação usava sempre a versão mais
+      nova, então trocar o ritmo em setembro mudava o veredito de agosto de
+      "cumpriu" pra "não cumpriu". Agora já existem a versão 3 (o ritmo) e a 4 (o
+      aporte escolhido a dedo), e agosto continua comparando com a versão 1 —
+      byte a byte o mesmo corpo.
+    */
+    const relido = await api.chamar('ana', 'get', '/check-ins/2026-08', { sessao: ana.sessao, status: 200 });
+    expect(relido.body).toEqual(checkInDeAgosto);
+    expect(relido.body.comparacao.versaoDoPlano).toBe(1);
+
+    const atual = await api.chamar('ana', 'get', '/planos/atual', { sessao: ana.sessao, status: 200 });
+    expect(atual.body.versao).toBe(4);
+  });
+
+  await passo('PUT /organizacao guarda a árvore de grupos, e o PUT seguinte substitui ela inteira', async () => {
+    /*
+      O grupo "Guardar" é o do sistema: nasce com o valor do aporte do plano e é
+      editável — é assim que o ritmo e os grupos viram o MESMO controle. O valor
+      vem do plano atual, não de um literal: o que este passo prova é o
+      round-trip da árvore, e um número colado aqui só envelheceria.
+    */
+    const plano = await api.chamar('ana', 'get', '/planos/atual', { sessao: ana.sessao, status: 200 });
+    const arvore = {
+      grupos: [
+        {
+          id: 'grupo-guardar',
+          nome: 'Guardar',
+          icone: 'PiggyBank',
+          valor: plano.body.resultado.aporte as number,
+          contaParaMeta: true,
+          doSistema: true,
+          itens: [],
+        },
+        {
+          id: 'grupo-namoro',
+          nome: 'Namoro',
+          icone: 'Heart',
+          valor: 400,
+          contaParaMeta: false,
+          rendimentoMensal: 0.008,
+          doSistema: false,
+          itens: [
+            { id: 'item-presente', nome: 'Presente', valor: 150 },
+            { id: 'item-ferias', nome: 'Férias', valor: 200 },
+          ],
+        },
+      ],
+    };
+
+    const vazia = await api.chamar('ana', 'get', '/organizacao', { sessao: ana.sessao, status: 200 });
+    expect(vazia.headers['cache-control']).toBe('private, no-store');
+    expect(vazia.body).toEqual({ grupos: [] });
+
+    const salva = await api.chamar('ana', 'put', '/organizacao', { sessao: ana.sessao, corpo: arvore, status: 200 });
+    // o corpo da resposta é EXATAMENTE o corpo do próximo PUT: é isso que faz a
+    // cópia do servidor e a do localStorage não divergirem
+    expect(salva.body).toEqual(arvore);
+    const lida = await api.chamar('ana', 'get', '/organizacao', { sessao: ana.sessao, status: 200 });
+    expect(lida.body).toEqual(arvore);
+
+    // substituir a árvore inteira: o grupo que não veio some, com os itens dele
+    const menor = { grupos: [{ ...arvore.grupos[1], valor: 300, itens: [arvore.grupos[1]!.itens[0]] }] };
+    const trocada = await api.chamar('ana', 'put', '/organizacao', { sessao: ana.sessao, corpo: menor, status: 200 });
+    expect(trocada.body).toEqual(menor);
+    expect((await api.chamar('ana', 'get', '/organizacao', { sessao: ana.sessao, status: 200 })).body).toEqual(menor);
+
+    // a árvore é de quem organizou: o Bruno tem a dele, vazia até ele organizar
+    const doBruno = await api.chamar('bruno', 'get', '/organizacao', { sessao: bruno.sessao, status: 200 });
+    expect(doBruno.body).toEqual({ grupos: [] });
+    // PJ: a especificação sugere justamente o grupo "Imposto" pra quem não tem bruto
+    const arvoreDoBruno = {
+      grupos: [
+        {
+          id: 'grupo-imposto',
+          nome: 'Imposto',
+          icone: 'Receipt',
+          valor: 520,
+          contaParaMeta: false,
+          doSistema: false,
+          itens: [{ id: 'item-das', nome: 'DAS', valor: 520 }],
+        },
+      ],
+    };
+    await api.chamar('bruno', 'put', '/organizacao', { sessao: bruno.sessao, corpo: arvoreDoBruno, status: 200 });
+    expect((await api.chamar('ana', 'get', '/organizacao', { sessao: ana.sessao, status: 200 })).body).toEqual(menor);
+
+    await api.chamar('anonimo', 'get', '/organizacao', { status: 401 });
+    // id repetido no mesmo corpo é 400 por caminho, não "o último vence"
+    const repetido = await api.chamar('ana', 'put', '/organizacao', {
+      sessao: ana.sessao,
+      corpo: { grupos: [menor.grupos[0], { ...menor.grupos[0], nome: 'Outro' }] },
+      status: 400,
+    });
+    expect(repetido.body.error.details).toHaveProperty('grupos.1.id');
+    expect((await api.chamar('ana', 'get', '/organizacao', { sessao: ana.sessao, status: 200 })).body).toEqual(menor);
   });
 
   await passo('job do dia 1 abre setembro e manda o e-mail com descadastro no fragmento; rodar de novo não duplica', async () => {
@@ -679,7 +936,19 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     const dados = res.body;
 
     expect(dados.conta).toMatchObject({ email: ana.email, ativo: false, emailVerificadoEm: expect.any(String) });
-    expect(dados.perfil).toMatchObject({ rendaMensal: 4800, tipoRenda: 'clt', guardado: 3200 });
+    // a exportação leva as respostas NOVAS do perfil também: sem elas o arquivo
+    // da LGPD sai incompleto e nenhum outro teste fica vermelho
+    expect(dados.perfil).toMatchObject({
+      rendaMensal: 4800,
+      tipoRenda: 'clt',
+      guardado: 3200,
+      rendaInformada: 'bruta',
+      salarioBruto: 6000,
+      dependentes: 1,
+      competenciaTabela: '2026-01',
+      ritmo: 'acelerado',
+      meta: { tipo: 'carro', valorAlvo: 45000 },
+    });
     expect(dados.gastosFixos.map((g: { categoria: string; valor: number }) => [g.categoria, g.valor]).sort()).toEqual(
       [
         ['Academia', 119.9],
@@ -696,15 +965,32 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
         ['rotativo', 1800],
       ].sort(),
     );
-    expect(dados.planos.map((p: { versao: number }) => p.versao).sort()).toEqual([1, 2]);
+    expect(dados.planos.map((p: { versao: number }) => p.versao).sort()).toEqual([1, 2, 3, 4]);
     expect(dados.planos.find((p: { versao: number }) => p.versao === 2).entrada).toEqual(perfilAtual);
+    expect(dados.planos.find((p: { versao: number }) => p.versao === 3).entrada).toEqual(perfilComRitmo);
     expect(dados.metas).toEqual([
       expect.objectContaining({ nome: 'Reserva de emergência', valorAlvo: 15000, acumulado: 3750, publicSlug: metaDaAna.slug }),
     ]);
     expect(dados.checkIns.map((c: { competencia: string }) => c.competencia).sort()).toEqual(['2026-08', '2026-09']);
+    // a árvore do excedente entra no arquivo, com os itens dentro do grupo e sem
+    // os ids (que são chave, não informação)
+    expect(dados.grupos).toEqual([
+      {
+        nome: 'Namoro',
+        icone: 'Heart',
+        valor: 300,
+        contaParaMeta: false,
+        rendimentoMensal: 0.008,
+        doSistema: false,
+        criadoEm: expect.any(String),
+        itens: [{ nome: 'Presente', valor: 150 }],
+      },
+    ]);
 
     expect(res.text).not.toContain(bruno.email);
     expect(res.text).not.toContain('Notebook');
+    // nada da organização do Bruno
+    expect(res.text).not.toContain('Imposto');
   });
 
   await passo('DELETE /me exige a confirmação; com ela apaga, e a mesma sessão passa a dar 401', async () => {
@@ -721,6 +1007,7 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
       ['get', '/me/exportar'],
       ['post', '/planos'],
       ['get', '/metas'],
+      ['get', '/organizacao'],
     ] as const) {
       const res = await api.chamar('ana', metodo, caminho, { sessao: ana.sessao, status: 401 });
       expect(res.body.error.code).toBe('NAO_AUTENTICADO');
@@ -745,6 +1032,9 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect(metas.body.items.map((m: { nome: string }) => m.nome)).toEqual(['Notebook']);
     const checkIns = await api.chamar('bruno', 'get', '/check-ins', { sessao: s, status: 200 });
     expect(checkIns.body.items).toEqual([expect.objectContaining({ competencia: '2026-09', enviadoEm: '2026-10-01T03:30:00.000Z' })]);
+    // a exclusão da Ana não levou a árvore de grupos do Bruno junto
+    const organizacao = await api.chamar('bruno', 'get', '/organizacao', { sessao: s, status: 200 });
+    expect(organizacao.body.grupos.map((g: { nome: string }) => g.nome)).toEqual(['Imposto']);
 
     expect(await retratoDaConta(r, bruno.id)).toEqual({
       conta: true,
@@ -755,6 +1045,8 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
       metas: 1,
       checkIns: 1,
       categoriasPersonalizadas: 0,
+      grupos: 1,
+      itensDeGrupo: 1,
     });
   });
 

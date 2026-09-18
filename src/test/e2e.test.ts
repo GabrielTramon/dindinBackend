@@ -1,19 +1,20 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
-import { APP_URL_E2E, executarFluxoCompleto, montarAmbiente, retratoDaConta } from './e2e-fluxo';
+import { APP_URL_E2E, executarFluxoCompleto, montarAmbiente, PASSOS_DO_FLUXO, retratoDaConta } from './e2e-fluxo';
 
 /*
   Ponta a ponta com PERSISTENCIA=memoria: a composição inteira da produção
-  (config → container → rotas dos nove módulos), sem banco. O mesmo fluxo roda
+  (config → container → rotas dos dez módulos), sem banco. O mesmo fluxo roda
   contra Postgres em e2e.integration.test.ts.
 */
 
 describe('e2e (memória)', () => {
-  it('o fluxo completo: link mágico → perfil → plano → meta → check-in → job → descadastro → exportar → excluir', async () => {
+  it('o fluxo completo: link mágico → perfil → plano → meta → check-in → organização → job → descadastro → exportar → excluir', async () => {
     const ambiente = montarAmbiente();
     const { ana, bruno, passos } = await executarFluxoCompleto(ambiente);
 
-    expect(passos).toHaveLength(21);
+    // a lista inteira, não a contagem: quando um passo entra, o diff diz qual
+    expect(passos).toEqual([...PASSOS_DO_FLUXO]);
     // a exclusão da Ana não levou a do Bruno, e o catálogo continua inteiro
     const r = ambiente.container.repositories;
     expect((await retratoDaConta(r, ana.id)).conta).toBe(false);

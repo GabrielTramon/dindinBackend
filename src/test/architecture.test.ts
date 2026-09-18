@@ -18,10 +18,23 @@ const GRAFO: Record<string, readonly string[]> = {
   dividas: [],
   metas: [],
   planos: [],
+  // organizacao só GUARDA a árvore de grupos: quem calcula a base (o excedente) é o motor, no cliente
+  organizacao: [],
   'gastos-fixos': ['categorias'],
   perfil: ['categorias', 'gastos-fixos', 'dividas'],
   'check-ins': ['planos', 'identidade'],
-  privacidade: ['identidade', 'categorias', 'perfil', 'gastos-fixos', 'dividas', 'planos', 'metas', 'check-ins'],
+  privacidade: [
+    'identidade',
+    'categorias',
+    'perfil',
+    'gastos-fixos',
+    'dividas',
+    'planos',
+    'metas',
+    'check-ins',
+    // exportar e excluir tudo (LGPD) alcança a árvore de grupos também
+    'organizacao',
+  ],
 };
 
 interface Arquivo {
