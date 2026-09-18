@@ -76,6 +76,38 @@ export function mascaraCentavosBRL(texto: string): string {
   return (centavos / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
+/**
+ * Máscara de digitação de uma taxa em porcentagem: só dígitos, uma vírgula e no
+ * máximo duas casas, limitada a `maxPct`.
+ *
+ * Devolve o TEXTO limpo, não o número: "0" e "0," precisam continuar na tela
+ * enquanto a pessoa digita, senão a tecla seguinte não tem onde cair. Foi
+ * exatamente por isso que a primeira versão do campo de rendimento não pegava —
+ * ela reaproveitava a máscara de dinheiro, que monta o número da direita pra
+ * esquerda e transformava "0,8" em "0,08" e um "1" sozinho em 0,1%.
+ */
+export function mascaraTaxa(texto: string, maxPct: number): string {
+  const soNumero = texto.replace(/[^\d.,]/g, "").replace(/\./g, ",");
+  const [inteira = "", ...resto] = soNumero.split(",");
+  const limpo = resto.length === 0 ? inteira.slice(0, 2) : `${inteira.slice(0, 2)},${resto.join("").slice(0, 2)}`;
+  const numero = Number(limpo.replace(",", "."));
+  // acima do teto o campo para no teto, em vez de guardar um número e mostrar outro
+  return Number.isFinite(numero) && numero > maxPct ? String(maxPct) : limpo;
+}
+
+/** "0,8" → 0.008. Devolve null enquanto ainda não é número ("", "0,", "," …). */
+export function taxaDoTexto(texto: string, maxPct: number): number | null {
+  const numero = Number(texto.replace(",", "."));
+  if (texto.trim() === "" || !Number.isFinite(numero) || numero <= 0) return null;
+  return arredondar(Math.min(numero, maxPct) / 100, 5);
+}
+
+/** 0.008 → "0,8". Vazio quando não há taxa. */
+export function textoDaTaxa(fracao: number | undefined): string {
+  if (fracao === undefined || !Number.isFinite(fracao)) return "";
+  return (fracao * 100).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+}
+
 export function arredondar(valor: number, casas = 2): number {
   const f = 10 ** casas;
   return Math.round((valor + Number.EPSILON) * f) / f;
