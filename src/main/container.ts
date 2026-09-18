@@ -26,6 +26,8 @@ import type { SubscribersRepository } from '../modules/identidade';
 import { InMemorySubscribersRepository, PrismaSubscribersRepository } from '../modules/identidade/infra';
 import type { MetasRepository } from '../modules/metas';
 import { InMemoryMetasRepository, PrismaMetasRepository } from '../modules/metas/infra';
+import type { GruposRepository } from '../modules/organizacao';
+import { InMemoryGruposRepository, PrismaGruposRepository } from '../modules/organizacao/infra';
 import type { PerfisRepository } from '../modules/perfil';
 import { InMemoryPerfisRepository, PrismaPerfisRepository } from '../modules/perfil/infra';
 import type { VersoesPlanoRepository } from '../modules/planos';
@@ -58,6 +60,7 @@ export interface Repositories {
   versoesPlano: VersoesPlanoRepository;
   metas: MetasRepository;
   checkIns: CheckInsRepository;
+  grupos: GruposRepository;
 }
 
 export interface Services {
@@ -99,6 +102,7 @@ function createPrismaRepositories(db: PrismaDatabase): Repositories {
     versoesPlano: new PrismaVersoesPlanoRepository(db),
     metas: new PrismaMetasRepository(db),
     checkIns: new PrismaCheckInsRepository(db),
+    grupos: new PrismaGruposRepository(db),
   };
 }
 
@@ -135,6 +139,9 @@ function createInMemoryRepositories(): Repositories {
     versoesPlano: new InMemoryVersoesPlanoRepository(),
     metas: new InMemoryMetasRepository(),
     checkIns: new InMemoryCheckInsRepository({ subscriberExists: contaExiste }),
+    // sem callback: a única FK de grupos é o dono, e quem chega aqui já passou
+    // pelo requireAuth, que confere se a conta existe
+    grupos: new InMemoryGruposRepository(),
   };
 }
 

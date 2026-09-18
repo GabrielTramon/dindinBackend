@@ -5,6 +5,7 @@ import { createDividasModule } from '../modules/dividas/infra';
 import { createGastosFixosModule } from '../modules/gastos-fixos/infra';
 import { createIdentidadeModule } from '../modules/identidade/infra';
 import { createMetasModule } from '../modules/metas/infra';
+import { createOrganizacaoModule } from '../modules/organizacao/infra';
 import { createPerfilModule } from '../modules/perfil/infra';
 import { createPlanosModule } from '../modules/planos/infra';
 import { createPrivacidadeModule } from '../modules/privacidade/infra';
@@ -76,6 +77,11 @@ export function mountModules(api: Router, container: Container): void {
 
   api.use(createCheckInsModule({ ...common, checkIns: r.checkIns, versoesPlano: r.versoesPlano }).router);
 
+  // organizacao não depende de ninguém: guarda a árvore de grupos do excedente.
+  // O `ids` que vem no spread é ignorado — o id do grupo vem do cliente, porque
+  // é o mesmo do localStorage e é o que faz a árvore sobreviver ao round-trip.
+  api.use(createOrganizacaoModule({ ...common, grupos: r.grupos }).router);
+
   api.use(
     createPrivacidadeModule({
       clock: s.clock,
@@ -89,6 +95,7 @@ export function mountModules(api: Router, container: Container): void {
       versoesPlano: r.versoesPlano,
       metas: r.metas,
       checkIns: r.checkIns,
+      grupos: r.grupos,
     }).router,
   );
 }
