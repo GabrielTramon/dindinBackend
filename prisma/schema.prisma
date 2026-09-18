@@ -28,8 +28,8 @@ datasource db {
 // ----------------------------------------------------------------------------
 
 model Subscriber {
-  id    String @id @default(uuid())
-  email String @unique
+  id            String    @id @default(uuid())
+  email         String    @unique
   /// SHA-256 do token do link mágico — o token em si só existe no e-mail.
   /// Rotacionado a cada envio e trocado por um valor inutilizável depois de usado.
   token         String    @unique
@@ -50,6 +50,7 @@ model Subscriber {
   planos     Plan[]
   metas      Goal[]
   checkIns   CheckIn[]
+  grupos     Grupo[]
 
   @@map("subscribers")
 }
@@ -76,19 +77,75 @@ enum Moradia {
   @@map("moradia")
 }
 
+enum RendaInformada {
+  BRUTA
+  LIQUIDA
+
+  @@map("renda_informada")
+}
+
+enum Ritmo {
+  LEVE
+  EQUILIBRADO
+  ACELERADO
+
+  @@map("ritmo")
+}
+
+/// o slug do catálogo do motor (metas-catalogo.ts); publicado, não muda
+enum MetaTipo {
+  CARRO
+  CASA
+  LIBERDADE
+  EMERGENCIA
+  VIAGEM
+  ESTUDOS
+  OUTRO
+
+  @@map("meta_tipo")
+}
+
 model Profile {
   subscriberId String     @id @map("subscriber_id")
   subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
 
-  rendaMensal Decimal   @map("renda_mensal") @db.Decimal(12, 2)
+  /// SEMPRE o líquido: é o número que o motor usa. Quando a pessoa informa o
+  /// bruto, aqui entra o líquido calculado no momento da resposta.
+  rendaMensal Decimal @map("renda_mensal") @db.Decimal(12, 2)
+
+  // ── Como a renda foi informada ──────────────────────────────────────────
+  // Tudo nulo de propósito: quem respondeu antes destas colunas informou o
+  // líquido e não escolheu ritmo. NULL é o único valor que distingue "não
+  // escolheu" de "escolheu o padrão" — e default aqui mudaria o snapshot de
+  // todo plano já gravado, criando uma versão nova pra base inteira.
+  rendaInformada    RendaInformada? @map("renda_informada")
+  /// o bruto informado, só como registro; o líquido nunca é recalculado a
+  /// partir dele (a tabela do imposto muda todo ano e o passado mudaria junto)
+  salarioBruto      Decimal?        @map("salario_bruto") @db.Decimal(12, 2)
+  dependentes       Int?
+  /// competência da tabela que gerou o líquido, ex.: "2026-01"
+  competenciaTabela String?         @map("competencia_tabela")
+  /// quanto do que sobra vira aporte; nulo = equilibrado
+  ritmo             Ritmo?
+
+  // ── Meta principal ──────────────────────────────────────────────────────
+  // Uma só, escolhida no questionário. Fica em colunas do perfil (e não numa
+  // tabela) porque é exatamente uma por pessoa e viaja junto com o perfil do
+  // motor. As metas do módulo `metas` (com página pública) são outra coisa:
+  // lista, com valor acumulado e prazo próprio.
+  metaTipo      MetaTipo? @map("meta_tipo")
+  /// obrigatório quando o tipo é "outro"
+  metaNome      String?   @map("meta_nome")
+  metaValorAlvo Decimal?  @map("meta_valor_alvo") @db.Decimal(12, 2)
+
   /// CLT → reserva de 3 meses; PJ e INFORMAL → 6
-  tipoRenda   TipoRenda @map("tipo_renda")
-  idade       Int
-  moradia     Moradia
+  tipoRenda    TipoRenda @map("tipo_renda")
+  idade        Int
+  moradia      Moradia
   /// aluguel ou parcela + condomínio; 0 quando mora com os pais ou casa quitada
-  custoMoradia Decimal  @map("custo_moradia") @db.Decimal(12, 2)
+  custoMoradia Decimal   @map("custo_moradia") @db.Decimal(12, 2)
   /// poupança, conta rendendo, dinheiro parado
-  guardado     Decimal  @db.Decimal(12, 2)
+  guardado     Decimal   @db.Decimal(12, 2)
 
   atualizadoEm DateTime @updatedAt @map("atualizado_em")
 
@@ -185,12 +242,12 @@ model Divida {
   profileId String  @map("profile_id")
   profile   Profile @relation(fields: [profileId], references: [subscriberId], onDelete: Cascade)
 
-  tipo  TipoDivida
-  saldo Decimal    @db.Decimal(12, 2)
+  tipo      TipoDivida
+  saldo     Decimal    @db.Decimal(12, 2)
   /// parcela mensal já paga hoje; nulo quando não há parcela fixa
-  parcela Decimal? @db.Decimal(12, 2)
+  parcela   Decimal?   @db.Decimal(12, 2)
   /// ex.: 4.3000 = 430% a.a.; nulo usa o padrão do tipo em config.ts
-  taxaAnual Decimal? @map("taxa_anual") @db.Decimal(8, 4)
+  taxaAnual Decimal?   @map("taxa_anual") @db.Decimal(8, 4)
 
   criadoEm DateTime @default(now()) @map("criado_em")
 
@@ -211,7 +268,7 @@ model Plan {
   subscriberId String     @map("subscriber_id")
   subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
 
-  versao Int
+  versao    Int
   /// perfil congelado no momento do cálculo, no formato de @/domain
   inputSnap Json @map("input_snap")
   /// degrau da cascata, alocações e projeções
@@ -234,8 +291,8 @@ model Goal {
   subscriberId String     @map("subscriber_id")
   subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
 
-  nome      String
-  valorAlvo Decimal @map("valor_alvo") @db.Decimal(12, 2)
+  nome         String
+  valorAlvo    Decimal  @map("valor_alvo") @db.Decimal(12, 2)
   /// dos dois abaixo, a pessoa informa um e o motor calcula o outro
   aporteMensal Decimal? @map("aporte_mensal") @db.Decimal(12, 2)
   prazoMeses   Int?     @map("prazo_meses")
@@ -255,6 +312,64 @@ model Goal {
 // ----------------------------------------------------------------------------
 // Check-in mensal — o ritual que faz a pessoa voltar
 // ----------------------------------------------------------------------------
+
+// ----------------------------------------------------------------------------
+// Organização — como a pessoa reparte o que sobra
+//
+// Uma árvore de dois níveis, editada como um todo: o PUT substitui tudo numa
+// transação. Duas tabelas em vez de uma auto-referenciada porque, no Postgres,
+// UNIQUE com coluna nula não impede dois grupos raiz com o mesmo nome — e a
+// profundidade de exatamente dois níveis sai de graça no schema.
+//
+// A chave primária é composta com o dono: o id vem do cliente (é o mesmo do
+// localStorage, e é o que faz a árvore sobreviver ao round-trip), então sem o
+// dono na chave o id de uma pessoa colidiria com o de outra.
+// ----------------------------------------------------------------------------
+
+model Grupo {
+  id String
+
+  subscriberId String     @map("subscriber_id")
+  subscriber   Subscriber @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  nome  String
+  /// nome do componente no lucide-react, do catálogo do motor
+  icone String  @default("Tag")
+  valor Decimal @db.Decimal(12, 2)
+
+  /// "irá fazer parte da somatória para a meta financeira"
+  contaParaMeta    Boolean  @default(false) @map("conta_para_meta")
+  /// rendimento informado pela pessoa, ao mês (0.008 = 0,8%); nulo = não rende
+  rendimentoMensal Decimal? @map("rendimento_mensal") @db.Decimal(6, 4)
+  /// o "Guardar", que o plano preenche; existe um só por pessoa
+  doSistema        Boolean  @default(false) @map("do_sistema")
+
+  ordem    Int
+  criadoEm DateTime @default(now()) @map("criado_em")
+
+  itens ItemGrupo[]
+
+  @@id([subscriberId, id])
+  @@index([subscriberId, ordem])
+  @@map("grupos")
+}
+
+model ItemGrupo {
+  id String
+
+  subscriberId String @map("subscriber_id")
+  grupoId      String @map("grupo_id")
+  /// o dono vem junto na FK: assim item e grupo nunca discordam de dono
+  grupo        Grupo  @relation(fields: [subscriberId, grupoId], references: [subscriberId, id], onDelete: Cascade)
+
+  nome  String
+  valor Decimal @db.Decimal(12, 2)
+  ordem Int
+
+  @@id([subscriberId, grupoId, id])
+  @@index([subscriberId, grupoId, ordem])
+  @@map("itens_grupo")
+}
 
 model CheckIn {
   id String @id @default(uuid())
