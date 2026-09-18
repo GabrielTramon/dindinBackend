@@ -23,6 +23,13 @@ export class AtualizarPerfilUseCase implements UseCase<AtualizarPerfilInput, Per
     perfil.atualizar(
       {
         rendaMensal: input.rendaMensal,
+        rendaInformada: input.rendaInformada,
+        salarioBruto: input.salarioBruto,
+        dependentes: input.dependentes,
+        competenciaTabela: input.competenciaTabela,
+        ritmo: input.ritmo,
+      aporteEscolhido: input.aporteEscolhido,
+        meta: input.meta,
         tipoRenda: input.tipoRenda,
         idade: input.idade,
         moradia: input.moradia,

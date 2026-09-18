@@ -220,6 +220,49 @@ export function describeSincronizarPerfilCompletoContract(nome: string, setup: (
       expect((await h.categorias.findCustomByName(sub, 'Clube'))?.id).toBe(idDoClube);
     });
 
+    /*
+      A malha inteira do campo novo, nos dois modos: PUT /perfil/completo →
+      entidade → banco → GET. Todos são opcionais, então um esquecimento em
+      qualquer uma das listas campo a campo passa na compilação e some aqui.
+    */
+    it('ritmo, meta e renda bruta atravessam o PUT e voltam idênticos no GET', async () => {
+      const sub = await h.criarSubscriber();
+      const entrada = com({
+        rendaInformada: 'bruta',
+        salarioBruto: 3500.75,
+        dependentes: 2,
+        competenciaTabela: '2026-01',
+        ritmo: 'acelerado',
+        aporteEscolhido: 812.34,
+        meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+        gastosFixos: [{ categoria: 'luz', valor: 120 }],
+      });
+
+      const devolvido = await sincronizar(sub, entrada);
+
+      expect(devolvido).toEqual(entrada);
+      expect(await obter(sub)).toEqual(entrada);
+      expect((await h.perfis.findBySubscriberId(sub))?.ritmo).toBe('acelerado');
+    });
+
+    it('perfil sem os campos novos volta SEM as chaves — nem null, nem undefined presente', async () => {
+      const sub = await h.criarSubscriber();
+      const devolvido = await sincronizar(sub, BASE);
+
+      // toStrictEqual: `{ ritmo: undefined }` passaria no toEqual e viraria "ritmo": null no JSON
+      expect(devolvido).toStrictEqual(BASE);
+      expect(await obter(sub)).toStrictEqual(BASE);
+    });
+
+    it('PUT sem ritmo APAGA o ritmo gravado: o PUT substitui tudo, senão a escolha nunca se desfaz', async () => {
+      const sub = await h.criarSubscriber();
+      await sincronizar(sub, com({ ritmo: 'acelerado', meta: { tipo: 'carro', valorAlvo: 45_000 } }));
+      h.clock.advance(60_000);
+
+      expect(await sincronizar(sub, BASE)).toStrictEqual(BASE);
+      expect((await h.perfis.findBySubscriberId(sub))?.ritmo).toBeUndefined();
+    });
+
     it('perfil que já existe é atualizado: escalares novos, moradia sem custo zera o custo, data do relógio', async () => {
       const sub = await h.criarSubscriber();
       await sincronizar(sub, BASE);

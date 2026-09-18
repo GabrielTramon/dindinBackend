@@ -206,6 +206,57 @@ describe('ObterPerfilCompletoUseCase', () => {
   });
 });
 
+/*
+  Os campos posteriores à v1 (renda bruta, ritmo, meta) atravessando os casos
+  de uso. São todos opcionais: um esquecimento em qualquer lista campo a campo
+  compila e some — por isso os testes conferem a chave, não só o valor.
+*/
+describe('Perfil — campos novos nos casos de uso', () => {
+  const NOVOS = {
+    rendaInformada: 'bruta',
+    salarioBruto: 3500.75,
+    dependentes: 2,
+    competenciaTabela: '2026-01',
+    ritmo: 'acelerado',
+    meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+  } as const;
+
+  it('SalvarPerfilUseCase grava todos os campos novos', async () => {
+    const { perfil } = await m.salvar.execute({ subscriberId: 'sub-1', ...DADOS, ...NOVOS });
+    expect(perfil.toDados()).toStrictEqual({ ...DADOS, ...NOVOS });
+    expect((await m.perfis.findBySubscriberId('sub-1'))?.toDados()).toStrictEqual({ ...DADOS, ...NOVOS });
+  });
+
+  it('SalvarPerfilUseCase de novo, sem eles, apaga a escolha (PUT substitui tudo)', async () => {
+    await m.salvar.execute({ subscriberId: 'sub-1', ...DADOS, ...NOVOS });
+    m.clock.advance(60_000);
+    const { perfil } = await m.salvar.execute({ subscriberId: 'sub-1', ...DADOS });
+
+    expect(perfil.toDados()).toStrictEqual(DADOS);
+    expect((await m.perfis.findBySubscriberId('sub-1'))?.toDados()).toStrictEqual(DADOS);
+  });
+
+  it('AtualizarPerfilUseCase troca só o ritmo e não perde o resto', async () => {
+    await m.salvar.execute({ subscriberId: 'sub-1', ...DADOS, ...NOVOS });
+    const perfil = await m.atualizar.execute({ subscriberId: 'sub-1', ritmo: 'leve' });
+    expect(perfil.toDados()).toStrictEqual({ ...DADOS, ...NOVOS, ritmo: 'leve' });
+  });
+
+  // o teste que fecha a malha do ritmo: o que o motor recebe é o que a pessoa escolheu
+  it('gravar com ritmo "acelerado" faz o perfil do motor voltar com ritmo "acelerado"', async () => {
+    await m.salvar.execute({ subscriberId: 'sub-1', ...DADOS, ritmo: 'acelerado' });
+    const doMotor = await m.obterCompleto.execute({ subscriberId: 'sub-1' });
+
+    expect(doMotor.ritmo).toBe('acelerado');
+    expect(doMotor).toStrictEqual({ ...COMPLETO, ritmo: 'acelerado' });
+  });
+
+  it('perfil sem os campos novos chega ao motor SEM as chaves', async () => {
+    await m.salvar.execute({ subscriberId: 'sub-1', ...DADOS });
+    expect(await m.obterCompleto.execute({ subscriberId: 'sub-1' })).toStrictEqual(COMPLETO);
+  });
+});
+
 describe('SincronizarPerfilCompletoUseCase — só em memória', () => {
   it('grava o perfil primeiro e faz tudo dentro de UMA transação, na ordem combinada; o recarregado vem depois', async () => {
     const log: string[] = [];

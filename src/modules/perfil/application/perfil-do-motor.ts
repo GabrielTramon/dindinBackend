@@ -28,6 +28,9 @@ export function montarPerfilDoMotor(
   dividas: readonly Divida[],
 ): PerfilDoMotor {
   return {
+    // spread, não cópia campo a campo: é o que faz campo novo do perfil (ritmo, meta,
+    // salário bruto) chegar ao motor e ao inputSnap sem ninguém ter que lembrar daqui.
+    // `toDados()` já omite a chave do opcional ausente.
     ...perfil.toDados(),
     gastosFixos: gastos.map((gasto) => {
       const categoria = categoriasPorId.get(gasto.categoriaId);

@@ -46,6 +46,16 @@ const ESCALARES = {
   guardado: 1000,
 } as const;
 
+/** as respostas posteriores à v1: renda bruta, ritmo e meta */
+const NOVOS = {
+  rendaInformada: 'bruta',
+  salarioBruto: 3500.75,
+  dependentes: 2,
+  competenciaTabela: '2026-01',
+  ritmo: 'acelerado',
+  meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+} as const;
+
 const COMPLETO: PerfilDoMotor = { ...ESCALARES, gastosFixos: [], dividas: [] };
 const AGORA = '2026-09-17T12:00:00.000Z';
 
@@ -329,6 +339,82 @@ describe('PUT /api/v1/perfil/completo', () => {
 
     expect(res.body.error.details).toEqual({ 'gastosFixos.1.valor': 'No máximo 2 casas decimais' });
     expect((await obterCompleto('sub-1').expect(200)).body).toEqual(antes);
+  });
+});
+
+/*
+  A malha dos campos posteriores à v1 pelas quatro portas. Todos são opcionais:
+  faltar na lista do schema faz o PUT responder 200 e IGNORAR a escolha; faltar
+  no presenter faz o cliente regravar sem ela e a escolha sumir no F5. Nenhum
+  dos dois quebra a compilação — só estes testes.
+*/
+describe('Perfil — renda bruta, ritmo e meta pelo HTTP', () => {
+  it('PUT /perfil aceita e devolve os campos novos, e o GET traz os mesmos', async () => {
+    const res = await salvar('sub-1', { ...ESCALARES, ...NOVOS }).expect(201);
+    expect(res.body).toEqual({ ...ESCALARES, ...NOVOS, atualizadoEm: AGORA });
+    expect((await obter('sub-1').expect(200)).body).toEqual(res.body);
+  });
+
+  it('PUT /perfil sem os campos novos não inventa chave nenhuma na resposta', async () => {
+    const res = await salvar('sub-1', ESCALARES).expect(201);
+    expect(Object.keys(res.body).sort()).toEqual([...Object.keys(ESCALARES), 'atualizadoEm'].sort());
+  });
+
+  it('PUT /perfil sem ritmo apaga o ritmo gravado: o PUT substitui todas as respostas', async () => {
+    await salvar('sub-1', { ...ESCALARES, ...NOVOS }).expect(201);
+    const res = await salvar('sub-1', ESCALARES).expect(200);
+    expect(res.body).toEqual({ ...ESCALARES, atualizadoEm: AGORA });
+    expect((await obter('sub-1').expect(200)).body.ritmo).toBeUndefined();
+  });
+
+  it('PATCH /perfil muda só o ritmo e mantém o resto', async () => {
+    await salvar('sub-1', { ...ESCALARES, ...NOVOS }).expect(201);
+    const res = await atualizar('sub-1', { ritmo: 'leve' }).expect(200);
+    expect(res.body).toEqual({ ...ESCALARES, ...NOVOS, ritmo: 'leve', atualizadoEm: AGORA });
+  });
+
+  it('PUT /perfil/completo grava e devolve os campos novos, e o GET /completo repete', async () => {
+    const corpo = { ...COMPLETO, ...NOVOS, gastosFixos: [{ categoria: 'luz', valor: 120 }] };
+    const res = await sincronizar('sub-1', corpo).expect(200);
+
+    expect(res.body).toEqual(corpo);
+    expect((await obterCompleto('sub-1').expect(200)).body).toEqual(corpo);
+    // e o ritmo escolhido aparece também na porta dos escalares
+    expect((await obter('sub-1').expect(200)).body.ritmo).toBe('acelerado');
+  });
+
+  it('PUT /perfil/completo sem os campos novos devolve o corpo sem as chaves', async () => {
+    const res = await sincronizar('sub-1', COMPLETO).expect(200);
+    expect(Object.keys(res.body).sort()).toEqual(Object.keys(COMPLETO).sort());
+  });
+
+  it.each([
+    ['ritmo fora da lista', { ...ESCALARES, ritmo: 'agressivo' }, 'ritmo'],
+    ['ritmo MAIÚSCULO, como no banco', { ...ESCALARES, ritmo: 'ACELERADO' }, 'ritmo'],
+    ['renda informada fora da lista', { ...ESCALARES, rendaInformada: 'mista' }, 'rendaInformada'],
+    ['salário bruto com 3 casas', { ...ESCALARES, rendaInformada: 'bruta', salarioBruto: 3500.005 }, 'salarioBruto'],
+    ['competência fora do formato', { ...ESCALARES, competenciaTabela: '2026-13' }, 'competenciaTabela'],
+    ['dependentes como texto', { ...ESCALARES, dependentes: 'dois' }, 'dependentes'],
+    ['dependentes acima de 10 (regra do domínio)', { ...ESCALARES, dependentes: 11 }, 'dependentes'],
+    ['meta "outro" sem nome (schema do motor)', { ...ESCALARES, meta: { tipo: 'outro', valorAlvo: 5000 } }, 'meta.nome'],
+    ['meta com valor zero', { ...ESCALARES, meta: { tipo: 'carro', valorAlvo: 0 } }, 'meta.valorAlvo'],
+    ['renda bruta sem o salário bruto (regra do domínio)', { ...ESCALARES, rendaInformada: 'bruta' }, 'salarioBruto'],
+  ])('PUT /perfil com %s → 400 no campo', async (_caso, body, campo) => {
+    const res = await salvar('sub-1', body).expect(400);
+    expect(res.body.error.code).toBe('VALIDACAO');
+    expect(res.body.error.details).toHaveProperty([campo]);
+    await obter('sub-1').expect(404);
+  });
+
+  it('PUT /perfil/completo com meta "outro" sem nome → 400 no caminho do campo', async () => {
+    const res = await sincronizar('sub-1', { ...COMPLETO, meta: { tipo: 'outro', valorAlvo: 5000 } }).expect(400);
+    expect(res.body.error.details).toHaveProperty(['meta.nome']);
+  });
+
+  it('PUT /perfil/completo com renda bruta sem o bruto (regra do domínio) → 400 e o perfil não nasce', async () => {
+    const res = await sincronizar('sub-1', { ...COMPLETO, rendaInformada: 'bruta' }).expect(400);
+    expect(res.body.error.details).toEqual({ salarioBruto: 'Informe o seu salário bruto' });
+    await obterCompleto('sub-1').expect(404);
   });
 });
 

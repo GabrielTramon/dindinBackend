@@ -116,17 +116,17 @@ describe('resolverGastosDoMotor', () => {
 });
 
 describe('montarPerfilDoMotor', () => {
+  const ESCALARES = {
+    rendaMensal: 2800,
+    tipoRenda: 'clt',
+    idade: 24,
+    moradia: 'dividido',
+    custoMoradia: 700,
+    guardado: 1000,
+  } as const;
+
   it('ida e volta: catálogo vira slug, personalizada vira "outro" + nome, catálogo "Outro" também', () => {
-    const perfil = Perfil.criar({
-      subscriberId: 's1',
-      rendaMensal: 2800,
-      tipoRenda: 'clt',
-      idade: 24,
-      moradia: 'dividido',
-      custoMoradia: 700,
-      guardado: 1000,
-      agora,
-    });
+    const perfil = Perfil.criar({ subscriberId: 's1', ...ESCALARES, agora });
     const clube = propria('Clube');
     const gastos = [
       GastoFixo.criar({ id: 'g1', subscriberId: 's1', categoriaId: 'cat-mercado', valor: 450, agora }),
@@ -138,13 +138,9 @@ describe('montarPerfilDoMotor', () => {
     ];
     const porId = new Map([...CATALOGO, clube].map((c) => [c.id, c]));
 
-    expect(montarPerfilDoMotor(perfil, gastos, porId, dividas)).toEqual({
-      rendaMensal: 2800,
-      tipoRenda: 'clt',
-      idade: 24,
-      moradia: 'dividido',
-      custoMoradia: 700,
-      guardado: 1000,
+    // toStrictEqual: perfil sem os campos opcionais não pode ganhar chave nenhuma aqui
+    expect(montarPerfilDoMotor(perfil, gastos, porId, dividas)).toStrictEqual({
+      ...ESCALARES,
       gastosFixos: [
         { categoria: 'mercado', valor: 450 },
         { categoria: 'outro', nome: 'Clube', valor: 80 },
@@ -152,5 +148,41 @@ describe('montarPerfilDoMotor', () => {
       ],
       dividas: [{ tipo: 'rotativo', saldo: 1500 }],
     });
+  });
+
+  /*
+    O spread de `toDados()` é o que carrega os campos novos do perfil. Aqui o
+    `toEqual` é literal de propósito: um `toMatchObject` não veria um campo
+    sumir, e é justamente sumir sem erro que o campo opcional faz.
+  */
+  it('leva ritmo, meta e renda bruta pro formato do motor, campo a campo', () => {
+    const perfil = Perfil.criar({
+      subscriberId: 's1',
+      ...ESCALARES,
+      rendaInformada: 'bruta',
+      salarioBruto: 3500.75,
+      dependentes: 2,
+      competenciaTabela: '2026-01',
+      ritmo: 'acelerado',
+      meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+      agora,
+    });
+
+    expect(montarPerfilDoMotor(perfil, [], new Map(), [])).toStrictEqual({
+      ...ESCALARES,
+      rendaInformada: 'bruta',
+      salarioBruto: 3500.75,
+      dependentes: 2,
+      competenciaTabela: '2026-01',
+      ritmo: 'acelerado',
+      meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+      gastosFixos: [],
+      dividas: [],
+    });
+  });
+
+  it('o ritmo escolhido chega ao motor: gravar "acelerado" devolve "acelerado"', () => {
+    const perfil = Perfil.criar({ subscriberId: 's1', ...ESCALARES, ritmo: 'acelerado', agora });
+    expect(montarPerfilDoMotor(perfil, [], new Map(), []).ritmo).toBe('acelerado');
   });
 });

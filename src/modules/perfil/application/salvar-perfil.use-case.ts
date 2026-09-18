@@ -20,6 +20,13 @@ export class SalvarPerfilUseCase implements UseCase<SalvarPerfilInput, PerfilGra
     const novo = Perfil.criar({
       subscriberId: input.subscriberId,
       rendaMensal: input.rendaMensal,
+      rendaInformada: input.rendaInformada,
+      salarioBruto: input.salarioBruto,
+      dependentes: input.dependentes,
+      competenciaTabela: input.competenciaTabela,
+      ritmo: input.ritmo,
+      aporteEscolhido: input.aporteEscolhido,
+      meta: input.meta,
       tipoRenda: input.tipoRenda,
       idade: input.idade,
       moradia: input.moradia,

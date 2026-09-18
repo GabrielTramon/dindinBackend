@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ValidationError } from '../../../shared/domain/errors';
+import { METAS_TIPO, RENDAS_INFORMADAS, RITMOS } from '../../../shared/motor/schema';
 import { moradiaSemCusto, Perfil, type DadosPerfil, type PerfilProps } from './perfil';
 
 const agora = new Date('2026-09-17T12:00:00.000Z');
@@ -12,6 +13,16 @@ const dados: DadosPerfil = {
   moradia: 'aluguel',
   custoMoradia: 1200,
   guardado: 1000,
+};
+
+/** as respostas posteriores à v1, todas preenchidas */
+const NOVOS: Partial<DadosPerfil> = {
+  rendaInformada: 'bruta',
+  salarioBruto: 3500,
+  dependentes: 2,
+  competenciaTabela: '2026-01',
+  ritmo: 'acelerado',
+  meta: { tipo: 'carro', valorAlvo: 45_000.5 },
 };
 
 const criar = (sobrescrever: Partial<DadosPerfil> = {}) => Perfil.criar({ ...dados, ...sobrescrever, subscriberId: 's1', agora });
@@ -150,5 +161,139 @@ describe('Perfil — cópias', () => {
 
   it('toDados devolve só as respostas, sem dono nem data', () => {
     expect(criar().toDados()).toEqual(dados);
+  });
+});
+
+/*
+  As respostas posteriores à v1. Todas opcionais: por isso um campo esquecido
+  em qualquer uma das listas campo a campo some SEM erro de compilação, e por
+  isso cada teste daqui confere a chave, não só o valor.
+*/
+describe('Perfil — campos opcionais (renda bruta, ritmo e meta)', () => {
+  it('criar leva todos os campos novos pro snapshot', () => {
+    expect(criar(NOVOS).toSnapshot()).toEqual({ ...dados, ...NOVOS, subscriberId: 's1', atualizadoEm: agora });
+  });
+
+  it('perfil sem eles não ganha as chaves: nem no snapshot, nem em toDados', () => {
+    const p = criar();
+    const esperadas = ['custoMoradia', 'guardado', 'idade', 'moradia', 'rendaMensal', 'tipoRenda'];
+    expect(Object.keys(p.toDados()).sort()).toEqual(esperadas);
+    expect(Object.keys(p.toSnapshot()).sort()).toEqual([...esperadas, 'atualizadoEm', 'subscriberId'].sort());
+    // toStrictEqual: `{ ritmo: undefined }` passaria no toEqual e viraria "ritmo": null no JSON
+    expect(p.toDados()).toStrictEqual(dados);
+  });
+
+  it('toDados leva as chaves presentes e a meta vai copiada: mexer nela não altera o perfil', () => {
+    const p = criar(NOVOS);
+    const d = p.toDados();
+    expect(d).toStrictEqual({ ...dados, ...NOVOS });
+
+    d.meta!.valorAlvo = 1;
+    d.meta!.tipo = 'casa';
+    expect(p.toDados().meta).toEqual({ tipo: 'carro', valorAlvo: 45_000.5 });
+    // o getter também devolve cópia
+    p.meta!.valorAlvo = 2;
+    expect(p.meta).toEqual({ tipo: 'carro', valorAlvo: 45_000.5 });
+  });
+
+  it.each(RITMOS)('aceita o ritmo %s', (ritmo) => {
+    expect(criar({ ritmo }).ritmo).toBe(ritmo);
+  });
+
+  it.each(METAS_TIPO)('aceita a meta do tipo %s (com nome, que "outro" exige)', (tipo) => {
+    expect(criar({ meta: { tipo, nome: 'Meu objetivo', valorAlvo: 1000 } }).meta).toEqual({
+      tipo,
+      nome: 'Meu objetivo',
+      valorAlvo: 1000,
+    });
+  });
+
+  it.each(RENDAS_INFORMADAS)('aceita rendaInformada %s (com o bruto junto)', (rendaInformada) => {
+    expect(criar({ rendaInformada, salarioBruto: 3500 }).rendaInformada).toBe(rendaInformada);
+  });
+
+  it.each<[Partial<DadosPerfil>, Record<string, string>]>([
+    [{ salarioBruto: 0 }, { salarioBruto: 'O salário precisa ser maior que zero' }],
+    [{ salarioBruto: -1 }, { salarioBruto: 'O salário precisa ser maior que zero' }],
+    [{ salarioBruto: 3500.005 }, { salarioBruto: 'No máximo 2 casas decimais' }],
+    [{ salarioBruto: 1_000_000.01 }, { salarioBruto: 'Confere esse valor? Está muito alto' }],
+    [{ dependentes: -1 }, { dependentes: 'Não pode ser negativo' }],
+    [{ dependentes: 11 }, { dependentes: 'No máximo 10' }],
+    [{ dependentes: 1.5 }, { dependentes: 'Em números inteiros' }],
+    [{ competenciaTabela: '2026-13' }, { competenciaTabela: 'Competência no formato AAAA-MM' }],
+    [{ competenciaTabela: 'janeiro/2026' }, { competenciaTabela: 'Competência no formato AAAA-MM' }],
+    [{ competenciaTabela: '' }, { competenciaTabela: 'Competência no formato AAAA-MM' }],
+    [{ meta: { tipo: 'carro', valorAlvo: 0 } }, { 'meta.valorAlvo': 'O valor precisa ser maior que zero' }],
+    [{ meta: { tipo: 'carro', valorAlvo: 1000.005 } }, { 'meta.valorAlvo': 'No máximo 2 casas decimais' }],
+    // a regra do metaSchema do motor, reaproveitada: meta "outro" sem nome é barra de progresso sem título
+    [{ meta: { tipo: 'outro', valorAlvo: 1000 } }, { 'meta.nome': 'Dê um nome pra essa meta' }],
+    [{ meta: { tipo: 'outro', nome: '   ', valorAlvo: 1000 } }, { 'meta.nome': 'Dê um nome pra essa meta' }],
+  ])('recusa %j no campo certo', (invalido, detalhes) => {
+    expect(erroDe(() => criar(invalido)).details).toEqual(detalhes);
+  });
+
+  it.each<[string, Partial<DadosPerfil>, string]>([
+    ['ritmo fora da lista', { ritmo: 'agressivo' as never }, 'ritmo'],
+    ['ritmo MAIÚSCULO, como no banco', { ritmo: 'ACELERADO' as never }, 'ritmo'],
+    ['rendaInformada fora da lista', { rendaInformada: 'BRUTA' as never, salarioBruto: 1 }, 'rendaInformada'],
+    ['tipo de meta fora do catálogo', { meta: { tipo: 'jatinho' as never, valorAlvo: 10 } }, 'meta.tipo'],
+    ['competência que não é texto', { competenciaTabela: 202601 as never }, 'competenciaTabela'],
+  ])('%s → ValidationError no campo', (_caso, invalido, campo) => {
+    expect(erroDe(() => criar(invalido)).details).toHaveProperty([campo]);
+  });
+
+  /*
+    Decisão documentada: rendaInformada "bruta" SEM salarioBruto é RECUSADA, não
+    ignorada. Ignorar gravaria um perfil que se diz calculado e que ninguém
+    consegue reconferir quando a tabela do imposto virar o ano.
+  */
+  it('rendaInformada "bruta" sem salarioBruto é recusada', () => {
+    expect(erroDe(() => criar({ rendaInformada: 'bruta' })).details).toEqual({
+      salarioBruto: 'Informe o seu salário bruto',
+    });
+  });
+
+  it('o caminho inverso passa: quem digitou o líquido pode ter o bruto guardado como registro', () => {
+    expect(criar({ rendaInformada: 'liquida', salarioBruto: 3500 }).toDados()).toMatchObject({
+      rendaInformada: 'liquida',
+      salarioBruto: 3500,
+    });
+    expect(criar({ salarioBruto: 3500 }).toDados()).toStrictEqual({ ...dados, salarioBruto: 3500 });
+  });
+
+  it('nome vazio em meta que não é "outro" some: guardar "" faria o perfil voltar diferente do que entrou', () => {
+    const p = criar({ meta: { tipo: 'casa', nome: '  ', valorAlvo: 300_000 } });
+    expect(p.toDados().meta).toStrictEqual({ tipo: 'casa', valorAlvo: 300_000 });
+    // e o nome que existe é normalizado pelo schema do motor (trim)
+    expect(criar({ meta: { tipo: 'outro', nome: '  Notebook  ', valorAlvo: 5000 } }).meta?.nome).toBe('Notebook');
+  });
+
+  it('atualizar troca o que veio e não mexe no que não veio', () => {
+    const p = criar(NOVOS);
+    p.atualizar({ ritmo: 'leve', meta: { tipo: 'viagem', valorAlvo: 9000 } }, depois);
+    expect(p.toDados()).toStrictEqual({
+      ...dados,
+      ...NOVOS,
+      ritmo: 'leve',
+      meta: { tipo: 'viagem', valorAlvo: 9000 },
+    });
+
+    p.atualizar({ guardado: 50 }, depois);
+    expect(p.toDados()).toMatchObject({ ritmo: 'leve', salarioBruto: 3500, guardado: 50 });
+  });
+
+  it('atualizar revalida o conjunto: tirar o bruto por PATCH é impossível, mas o par incoerente não cola', () => {
+    const p = criar();
+    expect(erroDe(() => p.atualizar({ rendaInformada: 'bruta' }, depois)).details).toEqual({
+      salarioBruto: 'Informe o seu salário bruto',
+    });
+    expect(p.toDados()).toStrictEqual(dados);
+  });
+
+  it('substituir apaga o opcional ausente — é o que faz o PUT poder desfazer a escolha', () => {
+    const p = criar(NOVOS);
+    p.substituir(dados, depois);
+    expect(p.toDados()).toStrictEqual(dados);
+    expect(p.toSnapshot()).toStrictEqual({ ...dados, subscriberId: 's1', atualizadoEm: depois });
   });
 });

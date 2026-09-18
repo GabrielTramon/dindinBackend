@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { UnauthorizedError } from '../../../../shared/domain/errors';
-import { MORADIAS, TIPOS_RENDA } from '../../../../shared/motor/schema';
+import { METAS_TIPO, MORADIAS, RENDAS_INFORMADAS, RITMOS, TIPOS_RENDA } from '../../../../shared/motor/schema';
 import { Perfil, type DadosPerfil } from '../../domain/perfil';
 import type { PerfisRepository } from '../../domain/perfis-repository';
 
@@ -31,6 +31,17 @@ const DADOS: DadosPerfil = {
   moradia: 'aluguel',
   custoMoradia: 1200,
   guardado: 1000,
+};
+
+/** as respostas posteriores à v1, todas preenchidas (colunas nulas no banco) */
+const NOVOS: Partial<DadosPerfil> = {
+  rendaInformada: 'bruta',
+  salarioBruto: 3500.75,
+  dependentes: 2,
+  competenciaTabela: '2026-01',
+  ritmo: 'acelerado',
+  aporteEscolhido: 812.34,
+  meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
 };
 
 export function describePerfisRepositoryContract(nome: string, setup: () => Promise<PerfisRepositoryHarness>) {
@@ -108,6 +119,70 @@ export function describePerfisRepositoryContract(nome: string, setup: () => Prom
       lido?.atualizadoEm.setFullYear(1990);
 
       expect((await h.repo.findBySubscriberId(sub))?.toSnapshot()).toEqual(perfil(sub).toSnapshot());
+    });
+
+    /*
+      Renda bruta, ritmo e meta: todas as colunas são NULAS e o domínio usa
+      `undefined`. O round-trip tem que provar as duas metades — quem respondeu
+      antes desses campos volta SEM as chaves (não com null, que mudaria o
+      inputSnap de todo plano já gravado), e quem respondeu volta idêntico.
+    */
+    it('perfil sem os campos novos volta SEM as chaves — nem null, nem undefined presente', async () => {
+      const sub = await h.criarSubscriber();
+      await h.repo.save(perfil(sub));
+      const lido = await h.repo.findBySubscriberId(sub);
+
+      // toStrictEqual: `{ ritmo: undefined }` passaria no toEqual e viraria "ritmo": null no JSON
+      expect(lido?.toDados()).toStrictEqual(DADOS);
+      expect(lido?.toSnapshot()).toStrictEqual({ ...DADOS, subscriberId: sub, atualizadoEm: agora });
+      expect(Object.keys(lido!.toDados()).sort()).toEqual(Object.keys(DADOS).sort());
+    });
+
+    it('perfil com os campos novos volta igual: centavos, dependentes, competência, ritmo, aporte escolhido e meta', async () => {
+      const sub = await h.criarSubscriber();
+      const p = perfil(sub, NOVOS);
+      await h.repo.save(p);
+
+      expect((await h.repo.findBySubscriberId(sub))?.toSnapshot()).toStrictEqual(p.toSnapshot());
+      expect((await h.repo.findBySubscriberId(sub))?.toDados()).toStrictEqual({ ...DADOS, ...NOVOS });
+    });
+
+    it('save de novo sem os campos novos APAGA as colunas: a pessoa consegue desfazer a escolha', async () => {
+      const sub = await h.criarSubscriber();
+      await h.repo.save(perfil(sub, NOVOS));
+      const semNada = perfil(sub, {}, depois);
+      await h.repo.save(semNada);
+
+      expect((await h.repo.findBySubscriberId(sub))?.toSnapshot()).toStrictEqual(semNada.toSnapshot());
+    });
+
+    it('meta sem nome (tipo do catálogo) volta sem a chave nome', async () => {
+      const sub = await h.criarSubscriber();
+      await h.repo.save(perfil(sub, { meta: { tipo: 'liberdade', valorAlvo: 1_000_000 } }));
+
+      expect((await h.repo.findBySubscriberId(sub))?.toDados().meta).toStrictEqual({
+        tipo: 'liberdade',
+        valorAlvo: 1_000_000,
+      });
+    });
+
+    it('todo ritmo, toda renda informada e todo tipo de meta vão e voltam em minúsculo', async () => {
+      const total = Math.max(RITMOS.length, RENDAS_INFORMADAS.length, METAS_TIPO.length);
+      for (let i = 0; i < total; i++) {
+        const sub = await h.criarSubscriber();
+        const ritmo = RITMOS[i % RITMOS.length]!;
+        const rendaInformada = RENDAS_INFORMADAS[i % RENDAS_INFORMADAS.length]!;
+        const tipo = METAS_TIPO[i % METAS_TIPO.length]!;
+        await h.repo.save(
+          perfil(sub, { ritmo, rendaInformada, salarioBruto: 3500, meta: { tipo, nome: 'Alvo', valorAlvo: 1000 } }),
+        );
+
+        expect((await h.repo.findBySubscriberId(sub))?.toDados()).toMatchObject({
+          ritmo,
+          rendaInformada,
+          meta: { tipo, nome: 'Alvo', valorAlvo: 1000 },
+        });
+      }
     });
 
     it('todo tipo de renda e toda moradia vão e voltam em minúsculo', async () => {

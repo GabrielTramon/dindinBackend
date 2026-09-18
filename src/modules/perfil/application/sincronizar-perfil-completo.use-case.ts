@@ -83,9 +83,18 @@ export class SincronizarPerfilCompletoUseCase implements UseCase<SincronizarPerf
     */
     const instante = (posicao: number) => new Date(agora.getTime() + posicao);
 
+    // lista completa: campo do perfil que não estiver aqui é gravado como ausente, e a
+    // escolha da pessoa (ritmo, meta, bruto) sumiria a cada PUT sem nenhum erro aparecer
     const novoPerfil = Perfil.criar({
       subscriberId,
       rendaMensal: entrada.rendaMensal,
+      rendaInformada: entrada.rendaInformada,
+      salarioBruto: entrada.salarioBruto,
+      dependentes: entrada.dependentes,
+      competenciaTabela: entrada.competenciaTabela,
+      ritmo: entrada.ritmo,
+      aporteEscolhido: entrada.aporteEscolhido,
+      meta: entrada.meta,
       tipoRenda: entrada.tipoRenda,
       idade: entrada.idade,
       moradia: entrada.moradia,
