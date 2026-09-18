@@ -7,6 +7,7 @@ import type { DividasRepository } from '../../dividas';
 import type { GastosFixosRepository } from '../../gastos-fixos';
 import type { SubscribersRepository } from '../../identidade';
 import type { MetasRepository } from '../../metas';
+import type { GruposRepository } from '../../organizacao';
 import type { PerfisRepository } from '../../perfil';
 import type { VersoesPlanoRepository } from '../../planos';
 
@@ -25,11 +26,14 @@ export interface ExcluirContaInput {
   Exclusão da conta (LGPD): física, não flag, e tudo ou nada.
 
   Cada módulo apaga o que é dele, numa transação só, na ordem das FKs:
-    gastos fixos → dívidas → perfil → categorias personalizadas → planos → metas → check-ins → subscriber
+    gastos fixos → dívidas → perfil → categorias personalizadas → planos → metas
+    → check-ins → grupos (itens antes) → subscriber
 
   - gastos antes das categorias: gastos_fixos.categoria_id é Restrict, e um gasto
     numa categoria personalizada barraria a exclusão dela;
   - gastos e dívidas antes do perfil: apontam pra ele (profile_id);
+  - os itens antes dos grupos, dentro do deleteAllBySubscriber de organizacao: o
+    modo memória não tem cascade, e é a mesma ordem que o replaceAll usa;
   - o subscriber por último: é a raiz de todas as FKs.
 
   Por que não confiar no ON DELETE CASCADE de subscribers: o modo em memória não
@@ -54,6 +58,7 @@ export class ExcluirContaUseCase implements UseCase<ExcluirContaInput, void> {
     private readonly versoesPlano: VersoesPlanoRepository,
     private readonly metas: MetasRepository,
     private readonly checkIns: CheckInsRepository,
+    private readonly grupos: GruposRepository,
     private readonly transactions: TransactionManager,
   ) {}
 
@@ -72,6 +77,7 @@ export class ExcluirContaUseCase implements UseCase<ExcluirContaInput, void> {
       await this.versoesPlano.deleteAllBySubscriber(subscriberId);
       await this.metas.deleteAllBySubscriber(subscriberId);
       await this.checkIns.deleteAllBySubscriber(subscriberId);
+      await this.grupos.deleteAllBySubscriber(subscriberId);
       await this.subscribers.delete(subscriberId);
     });
   }

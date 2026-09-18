@@ -9,6 +9,7 @@ import { PrismaDividasRepository } from '../../dividas/infra';
 import { PrismaGastosFixosRepository } from '../../gastos-fixos/infra';
 import { PrismaSubscribersRepository } from '../../identidade/infra';
 import { PrismaMetasRepository } from '../../metas/infra';
+import { PrismaGruposRepository } from '../../organizacao/infra';
 import { PrismaPerfisRepository } from '../../perfil/infra';
 import { PrismaVersoesPlanoRepository } from '../../planos/infra';
 import { CONFIRMACAO_EXCLUSAO, ExcluirContaUseCase } from './excluir-conta.use-case';
@@ -55,6 +56,7 @@ function montar(criarSubscribers: CriarSubscribers = (database) => new PrismaSub
   const versoesPlano = new PrismaVersoesPlanoRepository(database);
   const metas = new PrismaMetasRepository(database);
   const checkIns = new PrismaCheckInsRepository(database);
+  const grupos = new PrismaGruposRepository(database);
   const harness: PrivacidadeHarness = {
     subscribers,
     perfis,
@@ -64,6 +66,7 @@ function montar(criarSubscribers: CriarSubscribers = (database) => new PrismaSub
     versoesPlano,
     metas,
     checkIns,
+    grupos,
     ids: new UuidGenerator(),
     clock,
     exportar: new ExportarDadosUseCase(
@@ -75,6 +78,7 @@ function montar(criarSubscribers: CriarSubscribers = (database) => new PrismaSub
       versoesPlano,
       metas,
       checkIns,
+      grupos,
       clock,
     ),
     excluir: new ExcluirContaUseCase(
@@ -86,6 +90,7 @@ function montar(criarSubscribers: CriarSubscribers = (database) => new PrismaSub
       versoesPlano,
       metas,
       checkIns,
+      grupos,
       new PrismaTransactionManager(database),
     ),
   };
@@ -109,6 +114,10 @@ async function linhasDa(subscriberId: string) {
     plans: await p.plan.count({ where: { subscriberId } }),
     goals: await p.goal.count({ where: { subscriberId } }),
     check_ins: await p.checkIn.count({ where: { subscriberId } }),
+    grupos: await p.grupo.count({ where: { subscriberId } }),
+    // contado à parte do grupo: se alguém trocar a ordem da exclusão e confiar no
+    // cascade, é esta linha que fica pendurada sem ninguém ver
+    itens_grupo: await p.itemGrupo.count({ where: { subscriberId } }),
   };
 }
 
@@ -124,6 +133,8 @@ async function linhasNoBanco() {
     plans: await p.plan.count(),
     goals: await p.goal.count(),
     check_ins: await p.checkIn.count(),
+    grupos: await p.grupo.count(),
+    itens_grupo: await p.itemGrupo.count(),
     catalogo: await p.categoriaGastoFixo.count({ where: { subscriberId: null } }),
   };
 }
@@ -137,6 +148,8 @@ const UMA_CONTA_COMPLETA = {
   plans: 2,
   goals: 2,
   check_ins: 2,
+  grupos: 1,
+  itens_grupo: 2,
 };
 
 const NENHUMA_LINHA = {
@@ -148,6 +161,8 @@ const NENHUMA_LINHA = {
   plans: 0,
   goals: 0,
   check_ins: 0,
+  grupos: 0,
+  itens_grupo: 0,
 };
 
 describe('ExcluirContaUseCase — só no Postgres', () => {

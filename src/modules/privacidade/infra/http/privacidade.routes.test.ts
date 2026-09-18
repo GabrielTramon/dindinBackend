@@ -8,6 +8,7 @@ import { InMemoryDividasRepository } from '../../../dividas/infra';
 import { InMemoryGastosFixosRepository } from '../../../gastos-fixos/infra';
 import { InMemorySubscribersRepository } from '../../../identidade/infra';
 import { InMemoryMetasRepository } from '../../../metas/infra';
+import { InMemoryGruposRepository } from '../../../organizacao/infra';
 import { InMemoryPerfisRepository } from '../../../perfil/infra';
 import { InMemoryVersoesPlanoRepository } from '../../../planos/infra';
 import {
@@ -50,6 +51,7 @@ function repositoriosEmMemoria(): RepositoriosDaConta {
     versoesPlano: new InMemoryVersoesPlanoRepository(),
     metas: new InMemoryMetasRepository(),
     checkIns: new InMemoryCheckInsRepository({ subscriberExists: contaExiste }),
+    grupos: new InMemoryGruposRepository(),
     ids: kit.ids,
   };
 }

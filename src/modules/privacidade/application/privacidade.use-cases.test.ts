@@ -10,6 +10,7 @@ import { InMemoryDividasRepository } from '../../dividas/infra';
 import { InMemoryGastosFixosRepository } from '../../gastos-fixos/infra';
 import { InMemorySubscribersRepository } from '../../identidade/infra';
 import { InMemoryMetasRepository } from '../../metas/infra';
+import { InMemoryGruposRepository } from '../../organizacao/infra';
 import { InMemoryPerfisRepository } from '../../perfil/infra';
 import { VersaoPlano } from '../../planos';
 import { InMemoryVersoesPlanoRepository } from '../../planos/infra';
@@ -54,6 +55,7 @@ function montar(
   const versoesPlano = new InMemoryVersoesPlanoRepository();
   const metas = new InMemoryMetasRepository();
   const checkIns = new InMemoryCheckInsRepository({ subscriberExists: contaExiste });
+  const grupos = new InMemoryGruposRepository();
 
   // os casos de uso recebem as versões que registram chamadas; as ligações acima usam as originais
   const usado = <T extends object>(nome: string, alvo: T): T => (log ? gravando(nome, alvo, log) : alvo);
@@ -67,6 +69,7 @@ function montar(
     versoesPlano,
     metas,
     checkIns,
+    grupos,
     ids,
     clock,
     exportar: new ExportarDadosUseCase(
@@ -78,6 +81,7 @@ function montar(
       usado('versoesPlano', versoesPlano),
       usado('metas', metas),
       usado('checkIns', checkIns),
+      usado('grupos', grupos),
       clock,
     ),
     excluir: new ExcluirContaUseCase(
@@ -89,6 +93,7 @@ function montar(
       usado('versoesPlano', versoesPlano),
       usado('metas', metas),
       usado('checkIns', checkIns),
+      usado('grupos', grupos),
       transactions,
     ),
   };
@@ -138,6 +143,8 @@ describe('ExcluirContaUseCase — só em memória', () => {
       'versoesPlano.deleteAllBySubscriber',
       'metas.deleteAllBySubscriber',
       'checkIns.deleteAllBySubscriber',
+      // grupos (e os itens dentro deles) antes do subscriber, que é a raiz de todas as FKs
+      'grupos.deleteAllBySubscriber',
       'subscribers.delete',
       'run:fim',
     ]);

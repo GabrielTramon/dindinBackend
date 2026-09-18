@@ -8,6 +8,7 @@ import type { DividasRepository } from '../../dividas';
 import type { GastosFixosRepository } from '../../gastos-fixos';
 import type { SubscribersRepository } from '../../identidade';
 import type { MetasRepository } from '../../metas';
+import type { GruposRepository } from '../../organizacao';
 import type { PerfisRepository } from '../../perfil';
 import type { VersoesPlanoRepository } from '../../planos';
 import type { DadosExportados } from './dados-exportados';
@@ -43,6 +44,7 @@ export class ExportarDadosUseCase implements UseCase<ExportarDadosInput, DadosEx
     private readonly versoesPlano: VersoesPlanoRepository,
     private readonly metas: MetasRepository,
     private readonly checkIns: CheckInsRepository,
+    private readonly grupos: GruposRepository,
     private readonly clock: Clock,
   ) {}
 
@@ -52,7 +54,7 @@ export class ExportarDadosUseCase implements UseCase<ExportarDadosInput, DadosEx
     if (!conta) throw new NotFoundError('Conta não encontrada.');
 
     // toda consulta é escopada pelo dono: dado de outra pessoa não tem como entrar
-    const [perfil, gastos, visiveis, dividas, versoes, metas, checkIns] = await Promise.all([
+    const [perfil, gastos, visiveis, dividas, versoes, metas, checkIns, grupos] = await Promise.all([
       this.perfis.findBySubscriberId(subscriberId),
       this.gastosFixos.listBySubscriber(subscriberId),
       this.categorias.listVisible(subscriberId),
@@ -60,6 +62,7 @@ export class ExportarDadosUseCase implements UseCase<ExportarDadosInput, DadosEx
       todasAsPaginas((page) => this.versoesPlano.list(subscriberId, page)),
       this.metas.listBySubscriber(subscriberId),
       todasAsPaginas((page) => this.checkIns.list(subscriberId, page)),
+      this.grupos.listBySubscriber(subscriberId),
     ]);
 
     const nomeDaCategoria = new Map(visiveis.map((c) => [c.id, c.nome]));
@@ -72,18 +75,15 @@ export class ExportarDadosUseCase implements UseCase<ExportarDadosInput, DadosEx
         emailVerificadoEm: conta.emailVerificadoEm,
         ativo: conta.ativo,
       },
-      perfil:
-        perfil === null
-          ? null
-          : {
-              rendaMensal: perfil.rendaMensal,
-              tipoRenda: perfil.tipoRenda,
-              idade: perfil.idade,
-              moradia: perfil.moradia,
-              custoMoradia: perfil.custoMoradia,
-              guardado: perfil.guardado,
-              atualizadoEm: perfil.atualizadoEm,
-            },
+      /*
+        As respostas saem pelo `toDados()` da própria entidade, não campo a
+        campo: é o mesmo contrato público que o perfil já entrega ao motor
+        (perfil-do-motor.ts) e ele OMITE a chave opcional ausente. Campo novo do
+        perfil (ritmo, meta, salário bruto…) entra na exportação sozinho —
+        esquecer um deles aqui era exatamente o bug silencioso do checklist:
+        exportação LGPD incompleta e nenhum teste vermelho.
+      */
+      perfil: perfil === null ? null : { ...perfil.toDados(), atualizadoEm: perfil.atualizadoEm },
       gastosFixos: gastos.map((gasto) => {
         const categoria = nomeDaCategoria.get(gasto.categoriaId);
         // a FK garante a categoria de um gasto gravado, e as visíveis cobrem catálogo + próprias: faltar é defeito
@@ -126,6 +126,18 @@ export class ExportarDadosUseCase implements UseCase<ExportarDadosInput, DadosEx
         enviadoEm: c.enviadoEm,
         respondidoEm: c.respondidoEm,
         criadoEm: c.criadoEm,
+      })),
+      // a árvore vai com os nomes e a ordem que a pessoa deu; o id do grupo e do
+      // item ficam de fora, como todo id (ver o cabeçalho de dados-exportados.ts)
+      grupos: grupos.map((g) => ({
+        nome: g.nome,
+        icone: g.icone,
+        valor: g.valor,
+        contaParaMeta: g.contaParaMeta,
+        rendimentoMensal: g.rendimentoMensal ?? null,
+        doSistema: g.doSistema,
+        criadoEm: g.criadoEm,
+        itens: g.itens.map((item) => ({ nome: item.nome, valor: item.valor })),
       })),
     };
   }

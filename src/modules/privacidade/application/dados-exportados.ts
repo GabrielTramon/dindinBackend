@@ -78,6 +78,33 @@ export interface CheckInExportado {
   criadoEm: Date;
 }
 
+export interface ItemGrupoExportado {
+  nome: string;
+  valor: number;
+}
+
+/*
+  A árvore da organização do excedente. O id do grupo e do item FICA DE FORA como
+  todo id: aqui ele veio do cliente (é o do localStorage), mas continua sendo
+  chave, não informação — a árvore já se identifica pelo nome e pela ordem.
+
+  `rendimentoMensal` é a fração ao mês que a pessoa digitou (0.008 = 0,8%) e é
+  `null` quando o grupo não rende: no arquivo, ausente e "não rende" são a mesma
+  coisa, e `null` é mais legível do que a chave sumir no meio da lista.
+*/
+export interface GrupoExportado {
+  nome: string;
+  icone: string;
+  valor: number;
+  contaParaMeta: boolean;
+  rendimentoMensal: number | null;
+  /** o "Guardar" que o plano preenche */
+  doSistema: boolean;
+  criadoEm: Date;
+  /** na ordem em que a pessoa organizou */
+  itens: ItemGrupoExportado[];
+}
+
 export interface DadosExportados {
   exportadoEm: Date;
   conta: ContaExportada;
@@ -94,4 +121,6 @@ export interface DadosExportados {
   metas: MetaExportada[];
   /** todos os meses, do mais recente pro mais antigo */
   checkIns: CheckInExportado[];
+  /** a árvore do excedente, na ordem em que a pessoa organizou */
+  grupos: GrupoExportado[];
 }

@@ -1,15 +1,32 @@
 import { FUSO_DO_PRODUTO } from '../../../check-ins';
-import type { DadosExportados } from '../../application/dados-exportados';
+import type { DadosExportados, PerfilExportado } from '../../application/dados-exportados';
 
 /*
   O arquivo de exportação como a pessoa baixa. Copia campo a campo, em vez de
   serializar o objeto do caso de uso direto: se a estrutura ganhar um campo
   interno no futuro, ele não vaza no arquivo sem alguém decidir.
 
+  A exceção é o perfil — ver presentPerfilExportado logo abaixo: ali a lista
+  campo a campo era o próprio defeito.
+
   Datas em ISO; enums já vêm minúsculos do domínio.
 */
 
 const iso = (data: Date | null): string | null => data?.toISOString() ?? null;
+
+/*
+  A única tradução do perfil é a data: o resto são as respostas da pessoa, e
+  `PerfilExportado` (DadosPerfil + atualizadoEm) já é uma lista fechada de coisas
+  que a exportação DEVE trazer. Listar campo a campo aqui é justamente o que
+  fazia o ritmo, a meta e o salário bruto sumirem do arquivo sem nenhum teste
+  ficar vermelho — o bug que o checklist da especificação nomeia.
+
+  Chave opcional ausente continua ausente: o domínio já omite (nunca manda null).
+*/
+function presentPerfilExportado(perfil: PerfilExportado) {
+  const { atualizadoEm, ...respostas } = perfil;
+  return { ...respostas, atualizadoEm: atualizadoEm.toISOString() };
+}
 
 export function presentDadosExportados(dados: DadosExportados) {
   const { conta, perfil } = dados;
@@ -21,18 +38,7 @@ export function presentDadosExportados(dados: DadosExportados) {
       emailVerificadoEm: iso(conta.emailVerificadoEm),
       ativo: conta.ativo,
     },
-    perfil:
-      perfil === null
-        ? null
-        : {
-            rendaMensal: perfil.rendaMensal,
-            tipoRenda: perfil.tipoRenda,
-            idade: perfil.idade,
-            moradia: perfil.moradia,
-            custoMoradia: perfil.custoMoradia,
-            guardado: perfil.guardado,
-            atualizadoEm: perfil.atualizadoEm.toISOString(),
-          },
+    perfil: perfil === null ? null : presentPerfilExportado(perfil),
     gastosFixos: dados.gastosFixos.map((g) => ({
       categoria: g.categoria,
       valor: g.valor,
@@ -74,6 +80,16 @@ export function presentDadosExportados(dados: DadosExportados) {
       enviadoEm: iso(c.enviadoEm),
       respondidoEm: iso(c.respondidoEm),
       criadoEm: c.criadoEm.toISOString(),
+    })),
+    grupos: dados.grupos.map((g) => ({
+      nome: g.nome,
+      icone: g.icone,
+      valor: g.valor,
+      contaParaMeta: g.contaParaMeta,
+      rendimentoMensal: g.rendimentoMensal,
+      doSistema: g.doSistema,
+      criadoEm: g.criadoEm.toISOString(),
+      itens: g.itens.map((item) => ({ nome: item.nome, valor: item.valor })),
     })),
   };
 }

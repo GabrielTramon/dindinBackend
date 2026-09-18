@@ -7,6 +7,7 @@ import type { DividasRepository } from '../dividas';
 import type { GastosFixosRepository } from '../gastos-fixos';
 import type { SubscribersRepository } from '../identidade';
 import type { MetasRepository } from '../metas';
+import type { GruposRepository } from '../organizacao';
 import type { PerfisRepository } from '../perfil';
 import type { VersoesPlanoRepository } from '../planos';
 import { ExcluirContaUseCase } from './application/excluir-conta.use-case';
@@ -31,6 +32,7 @@ export interface PrivacidadeModuleDeps {
   versoesPlano: VersoesPlanoRepository;
   metas: MetasRepository;
   checkIns: CheckInsRepository;
+  grupos: GruposRepository;
   transactions: TransactionManager;
   clock: Clock;
   /**
@@ -56,6 +58,7 @@ export function createPrivacidadeModule(deps: PrivacidadeModuleDeps): Privacidad
         deps.versoesPlano,
         deps.metas,
         deps.checkIns,
+        deps.grupos,
         deps.clock,
       ),
       excluir: new ExcluirContaUseCase(
@@ -67,6 +70,7 @@ export function createPrivacidadeModule(deps: PrivacidadeModuleDeps): Privacidad
         deps.versoesPlano,
         deps.metas,
         deps.checkIns,
+        deps.grupos,
         deps.transactions,
       ),
       auth: deps.auth,

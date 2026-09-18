@@ -10,6 +10,7 @@ import { Divida, type DividasRepository } from '../../dividas';
 import { GastoFixo, type GastosFixosRepository } from '../../gastos-fixos';
 import { Subscriber, type SubscribersRepository } from '../../identidade';
 import { Meta, type MetasRepository } from '../../metas';
+import { Grupo, type GruposRepository } from '../../organizacao';
 import { Perfil, type DadosPerfil, type PerfisRepository } from '../../perfil';
 import { VersaoPlano, type PerfilDoMotor, type VersoesPlanoRepository } from '../../planos';
 import type { DadosExportados } from './dados-exportados';
@@ -35,6 +36,7 @@ export interface RepositoriosDaConta {
   versoesPlano: VersoesPlanoRepository;
   metas: MetasRepository;
   checkIns: CheckInsRepository;
+  grupos: GruposRepository;
   ids: IdGenerator;
 }
 
@@ -76,6 +78,7 @@ const EM = {
   metaViagem: '2026-07-03T08:00:00.000Z',
   metaViagemPublicada: '2026-07-04T08:00:00.000Z',
   metaReserva: '2026-07-05T08:00:00.000Z',
+  grupoInvestimento: '2026-07-06T08:00:00.000Z',
   checkInJulho: '2026-08-01T12:00:00.000Z',
   checkInJulhoEnviado: '2026-08-01T12:01:00.000Z',
   checkInJulhoRespondido: '2026-08-03T20:00:00.000Z',
@@ -84,8 +87,20 @@ const EM = {
 
 const em = (momento: keyof typeof EM) => new Date(EM[momento]);
 
+/*
+  Perfil com TODOS os campos opcionais preenchidos (renda bruta, dependentes,
+  competência, ritmo e meta) de propósito: a exportação LGPD é o único lugar que
+  prova, campo a campo, que nenhuma resposta da pessoa fica de fora do arquivo.
+  Com o perfil "só da v1" aqui, esquecer o ritmo no presenter passaria verde.
+*/
 const PERFIL: DadosPerfil = {
   rendaMensal: 3200.5,
+  rendaInformada: 'bruta',
+  salarioBruto: 3900,
+  dependentes: 1,
+  competenciaTabela: '2026-01',
+  ritmo: 'acelerado',
+  meta: { tipo: 'outro', nome: 'Intercâmbio', valorAlvo: 18000 },
   tipoRenda: 'clt',
   idade: 24,
   moradia: 'aluguel',
@@ -115,8 +130,8 @@ const comoJson = <T>(valor: T): T => JSON.parse(JSON.stringify(valor)) as T;
 /**
  * Uma conta com dado em todos os módulos: perfil, duas categorias personalizadas
  * (uma com gasto), um gasto do catálogo e um na personalizada, duas dívidas, duas
- * versões do plano, duas metas (uma publicada) e dois check-ins (um respondido).
- * Grava na ordem das FKs, como o app grava.
+ * versões do plano, duas metas (uma publicada), dois check-ins (um respondido)
+ * e um grupo do excedente com dois itens. Grava na ordem das FKs, como o app grava.
  */
 export async function criarContaCompleta(r: RepositoriosDaConta, pessoa: PessoaDeTeste): Promise<ContaDeTeste> {
   const subscriberId = r.ids.generate();
@@ -213,6 +228,25 @@ export async function criarContaCompleta(r: RepositoriosDaConta, pessoa: PessoaD
     }),
   );
 
+  // a árvore do excedente viaja inteira: um PUT, um grupo, dois itens dentro dele
+  await r.grupos.replaceAll(subscriberId, [
+    Grupo.criar({
+      id: r.ids.generate(),
+      subscriberId,
+      nome: 'Investimento',
+      icone: 'TrendingUp',
+      valor: 800,
+      contaParaMeta: true,
+      rendimentoMensal: 0.008,
+      ordem: 0,
+      itens: [
+        { id: r.ids.generate(), nome: 'Viagem', valor: 300 },
+        { id: r.ids.generate(), nome: 'Reserva', valor: 200 },
+      ],
+      agora: em('grupoInvestimento'),
+    }),
+  ]);
+
   const julho = CheckIn.abrir({ id: r.ids.generate(), subscriberId, competencia: '2026-07', agora: em('checkInJulho') });
   julho.marcarEnviado(em('checkInJulhoEnviado'));
   julho.responder({ rendaReal: 3200.5, gastoReal: 2500.1, guardadoReal: 700.4 }, em('checkInJulhoRespondido'));
@@ -289,6 +323,22 @@ export function exportacaoEsperada(pessoa: PessoaDeTeste, exportadoEm: Date): Da
         criadoEm: em('checkInJulho'),
       },
     ],
+    grupos: [
+      {
+        nome: 'Investimento',
+        icone: 'TrendingUp',
+        valor: 800,
+        contaParaMeta: true,
+        rendimentoMensal: 0.008,
+        doSistema: false,
+        criadoEm: em('grupoInvestimento'),
+        // na ordem em que a pessoa organizou, que é a que o PUT mandou
+        itens: [
+          { nome: 'Viagem', valor: 300 },
+          { nome: 'Reserva', valor: 200 },
+        ],
+      },
+    ],
   };
 }
 
@@ -304,6 +354,10 @@ export async function retratoDa(r: RepositoriosDaConta, subscriberId: string) {
     planos: (await r.versoesPlano.list(subscriberId, tudo)).items.length,
     metas: await r.metas.countBySubscriber(subscriberId),
     checkIns: (await r.checkIns.list(subscriberId, tudo)).items.length,
+    grupos: await r.grupos.countBySubscriber(subscriberId),
+    // os itens só existem dentro do grupo: contados pelo agregado, porque é assim
+    // que o repositório os entrega (e é o que um cascade esquecido deixaria pra trás)
+    itensDeGrupo: (await r.grupos.listBySubscriber(subscriberId)).reduce((total, g) => total + g.itens.length, 0),
   };
 }
 
@@ -316,6 +370,8 @@ export const CONTA_COMPLETA: Awaited<ReturnType<typeof retratoDa>> = {
   planos: 2,
   metas: 2,
   checkIns: 2,
+  grupos: 1,
+  itensDeGrupo: 2,
 };
 
 export const CONTA_APAGADA: Awaited<ReturnType<typeof retratoDa>> = {
@@ -327,6 +383,8 @@ export const CONTA_APAGADA: Awaited<ReturnType<typeof retratoDa>> = {
   planos: 0,
   metas: 0,
   checkIns: 0,
+  grupos: 0,
+  itensDeGrupo: 0,
 };
 
 /** Todas as chaves de um JSON, em qualquer profundidade. */
@@ -409,6 +467,7 @@ export function describePrivacidadeContract(nome: string, setup: () => Promise<P
           planos: [],
           metas: [],
           checkIns: [],
+          grupos: [],
         });
       });
 
