@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import { MESES_SIMULACAO_MAX } from "./config";
-import { avaliarDividas, simularQuitacao, taxaMensal } from "./motor";
+import { avaliarDividas, simularQuitacao, simularQuitacaoDetalhada, taxaMensal } from "./motor";
 import type { DividaAvaliada } from "./types";
 
 /*
@@ -131,5 +131,53 @@ describe("simularQuitacao", () => {
     const copia = structuredClone(d);
     simularQuitacao(d, 200);
     expect(d).toEqual(copia);
+  });
+});
+
+/*
+  Os dois jeitos de não ter prazo são coisas diferentes na tela: "os juros
+  crescem mais rápido do que você paga" é falso quando o saldo cai — só que
+  devagar demais pro horizonte da conta. O texto afirmava a primeira causa nos
+  dois casos.
+*/
+describe("simularQuitacaoDetalhada — por que não zerou", () => {
+  it("juros: o saldo não cai", () => {
+    expect(
+      simularQuitacaoDetalhada([divida({ saldo: 10000, taxaAnual: UM_PORCENTO_AM })], 50),
+    ).toEqual({ meses: null, motivo: "juros" });
+    // pagamento exatamente igual aos juros também é "juros": o saldo empaca
+    expect(
+      simularQuitacaoDetalhada([divida({ saldo: 10000, taxaAnual: UM_PORCENTO_AM })], 100),
+    ).toEqual({ meses: null, motivo: "juros" });
+  });
+
+  it("horizonte: o saldo cai todo mês, mas não cabe no teto de simulação", () => {
+    expect(simularQuitacaoDetalhada([divida({ saldo: 10_000_000, taxaAnual: 0 })], 1)).toEqual({
+      meses: null,
+      motivo: "horizonte",
+    });
+    // 600 parcelas de 1 zeram; 601 não
+    expect(simularQuitacaoDetalhada([divida({ saldo: MESES_SIMULACAO_MAX, taxaAnual: 0 })], 1)).toEqual({
+      meses: MESES_SIMULACAO_MAX,
+      motivo: null,
+    });
+    expect(
+      simularQuitacaoDetalhada([divida({ saldo: MESES_SIMULACAO_MAX + 1, taxaAnual: 0 })], 1),
+    ).toEqual({ meses: null, motivo: "horizonte" });
+  });
+
+  it("quitou: motivo null", () => {
+    expect(simularQuitacaoDetalhada([divida({ saldo: 1000, taxaAnual: 0 })], 250)).toEqual({
+      meses: 4,
+      motivo: null,
+    });
+    expect(simularQuitacaoDetalhada([], 0)).toEqual({ meses: 0, motivo: null });
+  });
+
+  it("simularQuitacao continua devolvendo só os meses (contrato usado pelo backend)", () => {
+    const caso: DividaAvaliada[] = [divida({ saldo: 1000, taxaAnual: 0 })];
+    expect(simularQuitacao(caso, 250)).toBe(simularQuitacaoDetalhada(caso, 250).meses);
+    const semSaida: DividaAvaliada[] = [divida({ saldo: 10000, taxaAnual: UM_PORCENTO_AM })];
+    expect(simularQuitacao(semSaida, 50)).toBeNull();
   });
 });

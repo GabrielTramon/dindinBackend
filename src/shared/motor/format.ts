@@ -62,6 +62,20 @@ export function mascaraInteiroBRL(texto: string): string {
   return Number(digitos).toLocaleString("pt-BR");
 }
 
+/**
+ * Máscara de digitação com centavos: cada dígito entra pela direita, como na
+ * maquininha e no app do banco — digitar 324780 mostra "3.247,80".
+ *
+ * Existe porque salário bruto e líquido calculado têm centavos: R$ 3.247,80 não
+ * é digitável com a máscara de inteiro.
+ */
+export function mascaraCentavosBRL(texto: string): string {
+  const digitos = texto.replace(/\D/g, "").replace(/^0+(?=\d{3})/, "");
+  if (!digitos) return "";
+  const centavos = Number(digitos.padStart(3, "0"));
+  return (centavos / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function arredondar(valor: number, casas = 2): number {
   const f = 10 ** casas;
   return Math.round((valor + Number.EPSILON) * f) / f;

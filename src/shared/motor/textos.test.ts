@@ -4,9 +4,11 @@
 */
 
 import { describe, expect, it } from "vitest";
-import { formatBRL } from "./format";
+import { formatBRL, formatMeses } from "./format";
+import { MESES_SIMULACAO_MAX } from "./config";
 import { gerarPlano } from "./motor";
-import { NOME_DIVIDA, ROTULO_DEGRAU, ROTULO_DIVIDA } from "./textos";
+import { RITMOS } from "./schema";
+import { NOME_DIVIDA, ROTULO_DEGRAU, ROTULO_DIVIDA, ROTULO_RITMO, textos } from "./textos";
 import type { Degrau, Perfil, Plano } from "./types";
 /** Açúcar dos testes: um gasto fixo único, pra cenários que só olham o total. */
 const gastos = (valor: number) => (valor > 0 ? [{ categoria: "mercado", valor }] : []);
@@ -69,7 +71,10 @@ const extras = [
   perfil({ tipoRenda: "informal", dividas: [{ tipo: "outra", saldo: 800 }] }),
   perfil({ dividas: [{ tipo: "financiamento", saldo: 15000, parcela: 500 }], guardado: 2000 }),
 ];
-const todos: Perfil[] = [...Object.values(porDegrau), ...Object.values(corte), ...extras];
+/** todo cenário pelos três ritmos: o ritmo muda frases, não só números */
+const todos: Perfil[] = RITMOS.flatMap((ritmo) =>
+  [...Object.values(porDegrau), ...Object.values(corte), ...extras].map((p) => ({ ...p, ritmo })),
+);
 
 function frases(p: Plano): string[] {
   return [
@@ -194,6 +199,85 @@ describe("proximosPassos", () => {
     const nunca = gerarPlano(perfil({ rendaMensal: 2000, dividas: [{ tipo: "rotativo", saldo: 30000 }], guardado: 1000 }));
     expect(nunca.proximosPassos.some((t) => t.includes("Renegociar"))).toBe(true);
     expect(nunca.proximosPassos.some((t) => t.includes("zeram em"))).toBe(false);
+  });
+
+  /*
+    "é o único caminho" é uma afirmação forte: só pode sair quando nenhum dos
+    três ritmos zera a dívida. Com o cartão de ritmo ao lado, dizer isso quando
+    o equilibrado resolve é mentir pra quem está no aperto.
+  */
+  describe("dívida cara sem prazo", () => {
+    /** medido: no leve essa dívida nunca zera; no equilibrado zera em 3 anos */
+    const apertado = perfil({
+      rendaMensal: 3194.76,
+      gastosFixos: gastos(1181.38),
+      dividas: [{ tipo: "emprestimo", saldo: 21901.62, taxaAnual: 0.9 }],
+      guardado: 1000,
+    });
+
+    it("no leve não quita, mas o texto não diz 'único caminho' — diz o prazo do ritmo que resolve", () => {
+      const leve = gerarPlano({ ...apertado, ritmo: "leve" });
+      const equilibrado = gerarPlano({ ...apertado, ritmo: "equilibrado" });
+      expect(leve.dividas.mesesParaQuitarCaras).toBeNull();
+      expect(equilibrado.dividas.mesesParaQuitarCaras).not.toBeNull();
+
+      const aviso = leve.proximosPassos.find((t) => t.includes("Neste ritmo"))!;
+      expect(aviso).toBeDefined();
+      expect(aviso).toContain(ROTULO_RITMO.equilibrado);
+      expect(aviso).toContain(formatMeses(equilibrado.dividas.mesesParaQuitarCaras!));
+      expect(aviso).toContain(NOME_DIVIDA.emprestimo);
+      expect(aviso).toBe(
+        "Neste ritmo, os juros crescem mais rápido do que você paga. No ritmo equilibrado — que guarda uma fatia maior do que sobra — o empréstimo zera em 3 anos.",
+      );
+      for (const t of leve.proximosPassos) {
+        expect(t).not.toContain("único caminho");
+        expect(t).not.toContain("não é opcional");
+      }
+    });
+
+    it("no equilibrado o prazo aparece normalmente, sem aviso", () => {
+      const p = gerarPlano({ ...apertado, ritmo: "equilibrado" });
+      expect(p.proximosPassos.some((t) => t.includes("zeram em"))).toBe(true);
+      expect(p.proximosPassos.some((t) => t.includes("Neste ritmo"))).toBe(false);
+    });
+
+    it("quando nenhum dos três quita, a frase forte volta — nos três ritmos", () => {
+      const semSaida = perfil({
+        rendaMensal: 2000,
+        dividas: [{ tipo: "rotativo", saldo: 30000 }],
+        guardado: 1000,
+      });
+      for (const ritmo of RITMOS) {
+        const p = gerarPlano({ ...semSaida, ritmo });
+        expect(p.diagnosticoCaras).toMatchObject({ ritmoQueResolve: null });
+        expect(p.proximosPassos.some((t) => t.includes("é o único caminho"))).toBe(true);
+        expect(p.proximosPassos.some((t) => t.includes("Renegociar"))).toBe(true);
+      }
+    });
+
+    it("travar no horizonte não vira 'os juros crescem mais rápido do que você paga'", () => {
+      // o mesmo plano, com a causa trocada: é o único jeito de exercitar a
+      // frase do horizonte sem uma dívida cara que leve 50 anos pra cair
+      const p = gerarPlano({
+        ...perfil({ rendaMensal: 2000, dividas: [{ tipo: "rotativo", saldo: 30000 }], guardado: 1000 }),
+      });
+      const passos = textos.proximosPassos({
+        perfil: p.perfil,
+        resumo: p.resumo,
+        degrau: p.degrau,
+        ritmo: p.ritmo,
+        folego: p.folego,
+        reserva: p.reserva,
+        dividas: p.dividas,
+        diagnosticoCaras: { ...p.diagnosticoCaras!, motivo: "horizonte" },
+        corte: p.corte,
+        aporte: p.aporte,
+        livre: p.livre,
+      });
+      const aviso = passos.find((t) => t.includes("é o único caminho"))!;
+      expect(aviso).toContain(formatMeses(MESES_SIMULACAO_MAX));
+      expect(aviso).not.toContain("crescem mais rápido");
+    });
   });
 
   it("degrau 3 diz quando a dívida média termina; degrau 4 pede pra separar o aporte pra um objetivo, sem prometer cálculo que ainda não existe", () => {

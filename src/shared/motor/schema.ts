@@ -25,6 +25,33 @@ export const TIPOS_DIVIDA = [
 /** moradias em que a pergunta de custo é pulada e o custo é 0 */
 export const MORADIAS_SEM_CUSTO = ["pais", "propria"] as const;
 
+export const RITMOS = ["leve", "equilibrado", "acelerado"] as const;
+export const RENDAS_INFORMADAS = ["bruta", "liquida"] as const;
+export const METAS_TIPO = [
+  "carro",
+  "casa",
+  "liberdade",
+  "emergencia",
+  "viagem",
+  "estudos",
+  "outro",
+] as const;
+
+export const metaSchema = z
+  .object({
+    tipo: z.enum(METAS_TIPO, { error: "Escolha a sua meta" }),
+    nome: z.string().trim().max(40, { error: "No máximo 40 caracteres" }).optional(),
+    valorAlvo: z
+      .number({ error: "Informe quanto você quer juntar" })
+      .positive({ error: "O valor precisa ser maior que zero" })
+      .max(100_000_000, { error: "Confere esse valor? Está muito alto" }),
+  })
+  // meta "outro" sem nome vira uma barra de progresso sem título na tela
+  .refine((m) => m.tipo !== "outro" || (m.nome !== undefined && m.nome.length > 0), {
+    error: "Dê um nome pra essa meta",
+    path: ["nome"],
+  });
+
 export const dividaSchema = z.object({
   tipo: z.enum(TIPOS_DIVIDA, { error: "Escolha o tipo da dívida" }),
   saldo: z
@@ -64,11 +91,31 @@ export const gastoFixoSchema = z
     path: ["nome"],
   });
 
+/*
+  Campos opcionais NUNCA levam `.default()`: o default apareceria em todo perfil
+  validado, mudaria o snapshot de quem já tem plano gravado e criaria uma versão
+  nova pra base inteira sem ninguém ter mudado nada.
+*/
 export const perfilSchema = z.object({
   rendaMensal: z
     .number({ error: "Informe quanto entra por mês" })
     .positive({ error: "A renda precisa ser maior que zero" })
     .max(1_000_000, { error: "Confere esse valor? Está muito alto" }),
+  rendaInformada: z.enum(RENDAS_INFORMADAS).optional(),
+  salarioBruto: z
+    .number({ error: "Informe o seu salário bruto" })
+    .positive({ error: "O salário precisa ser maior que zero" })
+    .max(1_000_000, { error: "Confere esse valor? Está muito alto" })
+    .optional(),
+  dependentes: z
+    .number()
+    .int({ error: "Em números inteiros" })
+    .min(0, { error: "Não pode ser negativo" })
+    .max(10, { error: "No máximo 10" })
+    .optional(),
+  competenciaTabela: z.string().optional(),
+  ritmo: z.enum(RITMOS).optional(),
+  meta: metaSchema.optional(),
   tipoRenda: z.enum(TIPOS_RENDA, { error: "Escolha como é a sua renda" }),
   idade: z
     .number({ error: "Informe sua idade" })

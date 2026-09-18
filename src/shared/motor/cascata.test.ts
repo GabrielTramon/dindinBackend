@@ -4,16 +4,18 @@
 */
 
 import { describe, expect, it } from "vitest";
-import { formatBRL } from "./format";
+import { arredondar, formatBRL } from "./format";
 import {
   FOLEGO_PISO,
   FOLEGO_TETO,
   MARGEM_MINIMA_CORTE,
   MULTIPLICADOR_RESERVA,
   PROPORCAO_APORTE,
+  proporcaoAporte,
 } from "./config";
 import { gerarPlano } from "./motor";
-import type { Degrau, Destino, Perfil, Plano } from "./types";
+import { RITMOS } from "./schema";
+import type { Degrau, Destino, Perfil, Plano, Ritmo } from "./types";
 /** Açúcar dos testes: um gasto fixo único, pra cenários que só olham o total. */
 const gastos = (valor: number) => (valor > 0 ? [{ categoria: "mercado", valor }] : []);
 
@@ -52,12 +54,36 @@ const DESTINO_DO_DEGRAU: Record<Degrau, Destino> = {
 };
 const ORDEM_CASCATA: Destino[] = ["folego", "divida_cara", "reserva", "divida_media", "metas"];
 
+/**
+ * O aporte esperado, recalculado à mão a partir da especificação: o ritmo pede
+ * uma fração do excedente e o piso do que fica livre segura o pedido. Escrito
+ * de novo aqui de propósito — se o teste chamasse a função do motor, provaria
+ * só que ela é igual a si mesma.
+ */
+function aporteEsperado(p: Plano): number {
+  const sugerido = p.resumo.excedente * proporcaoAporte(p.perfil.ritmo, p.degrau);
+  const tetoPeloLivre = Math.max(0, p.resumo.excedente - p.resumo.renda * MARGEM_MINIMA_CORTE);
+  const teto = Math.max(tetoPeloLivre, p.resumo.excedente * PROPORCAO_APORTE.equilibrado[p.degrau]);
+  return Math.min(sugerido, teto);
+}
+
 /** invariantes que valem pra qualquer plano com excedente > 0 */
 function esperarInvariantes(p: Plano) {
   expect(p.modoCorte).toBe(false);
   expect(p.corte).toBeNull();
-  // aporte é o excedente × proporção arredondado ao centavo: meio centavo de tolerância, com folga de float
-  expect(Math.abs(p.aporte - p.resumo.excedente * PROPORCAO_APORTE[p.degrau])).toBeLessThanOrEqual(0.0051);
+  // aporte é o excedente × proporção (com piso) arredondado ao centavo: meio centavo de tolerância, com folga de float
+  expect(Math.abs(p.aporte - aporteEsperado(p))).toBeLessThanOrEqual(0.0051);
+  // o piso nunca faz guardar menos do que o equilibrado guardaria neste degrau
+  const equilibrado = p.resumo.excedente * PROPORCAO_APORTE.equilibrado[p.degrau];
+  const pedido = p.resumo.excedente * proporcaoAporte(p.perfil.ritmo, p.degrau);
+  expect(p.aporte).toBeGreaterThanOrEqual(Math.min(pedido, equilibrado) - 0.0051);
+  // e nunca faz guardar MAIS do que o ritmo pediu
+  expect(p.aporte).toBeLessThanOrEqual(pedido + 0.0051);
+  // sobra pelo menos a margem mínima da renda, ou o que o equilibrado deixaria
+  const livreDoEquilibrado = p.resumo.excedente - equilibrado;
+  expect(p.livre).toBeGreaterThanOrEqual(
+    Math.min(p.resumo.renda * MARGEM_MINIMA_CORTE, livreDoEquilibrado) - 0.0051,
+  );
   expect(Math.abs(p.aporte + p.livre - p.resumo.excedente)).toBeLessThanOrEqual(0.01);
   expect(Math.abs(somaAlocacoes(p) - p.aporte)).toBeLessThanOrEqual(0.01);
   expect(p.alocacoes.length).toBeGreaterThan(0);
@@ -544,6 +570,16 @@ describe("cascata — invariantes em lote", () => {
     perfil({ guardado: 1_000_000 }),
     perfil({ rendaMensal: 3000, gastosFixos: gastos(300) }),
     perfil({ dividas: [{ tipo: "financiamento", saldo: 10000, parcela: 400 }] }),
+    // aperto de verdade: sobra pouco em relação à renda. É onde o piso do
+    // acelerado morde — sem cenário assim o piso nunca seria exercitado.
+    perfil({ rendaMensal: 3000, moradia: "aluguel", custoMoradia: 1000, gastosFixos: gastos(850) }),
+    perfil({
+      rendaMensal: 4000,
+      moradia: "aluguel",
+      custoMoradia: 2000,
+      gastosFixos: gastos(1500),
+      guardado: 2000,
+    }),
     // valores quebrados, pra estressar o arredondamento
     perfil({
       rendaMensal: 2333.33,
@@ -603,19 +639,35 @@ describe("cascata — invariantes em lote", () => {
 
   it("com excedente > 0: soma das alocações === aporte, aporte + livre === excedente, ordem da cascata", () => {
     let comExcedente = 0;
-    for (const c of cenarios) {
-      const p = gerarPlano(c);
-      if (p.resumo.excedente <= 0) {
-        expect(p.modoCorte).toBe(true);
-        expect(p.aporte).toBe(0);
-        expect(p.livre).toBe(0);
-        expect(p.alocacoes).toEqual([]);
-        continue;
+    // os mesmos cenários pelos três ritmos: o ritmo muda o tamanho do passo,
+    // nunca as invariantes
+    for (const ritmo of RITMOS) {
+      for (const c of cenarios) {
+        const p = gerarPlano({ ...c, ritmo });
+        expect(p.ritmo).toBe(ritmo);
+        if (p.resumo.excedente <= 0) {
+          expect(p.modoCorte).toBe(true);
+          expect(p.aporte).toBe(0);
+          expect(p.livre).toBe(0);
+          expect(p.alocacoes).toEqual([]);
+          expect(p.piso).toEqual({ sugerido: 0, teto: 0, mordeu: false });
+          continue;
+        }
+        comExcedente++;
+        esperarInvariantes(p);
       }
-      comExcedente++;
-      esperarInvariantes(p);
     }
-    expect(comExcedente).toBeGreaterThan(20);
+    expect(comExcedente).toBeGreaterThan(60);
+  });
+
+  it("o degrau não depende do ritmo: a ordem da cascata é a mesma nos três", () => {
+    for (const c of cenarios) {
+      const [leve, equilibrado, acelerado] = RITMOS.map((ritmo) => gerarPlano({ ...c, ritmo }));
+      expect(leve.degrau).toBe(equilibrado.degrau);
+      expect(acelerado.degrau).toBe(equilibrado.degrau);
+      expect(leve.modoCorte).toBe(equilibrado.modoCorte);
+      expect(acelerado.modoCorte).toBe(equilibrado.modoCorte);
+    }
   });
 
   it("degrau é o primeiro insatisfeito, na ordem fôlego → cara → reserva → média → metas", () => {
@@ -641,5 +693,128 @@ describe("cascata — invariantes em lote", () => {
       const taxas = p.dividas.avaliadas.map((d) => d.taxaAnual);
       for (let i = 1; i < taxas.length; i++) expect(taxas[i]).toBeLessThanOrEqual(taxas[i - 1]);
     }
+  });
+
+  /*
+    O ritmo (leve · equilibrado · acelerado) muda só o tamanho do passo. O que
+    estes testes protegem: quem não escolhe ritmo continua com o plano de
+    sempre, e o acelerado não vira um plano que ninguém consegue seguir.
+  */
+  describe("ritmo", () => {
+    const comExcedente = cenarios.filter((c) => gerarPlano(c).resumo.excedente > 0);
+
+    it("perfil sem ritmo gera exatamente o plano do equilibrado", () => {
+      for (const c of cenarios) {
+        const semRitmo = gerarPlano(c);
+        const equilibrado = gerarPlano({ ...c, ritmo: "equilibrado" });
+        expect(semRitmo.ritmo).toBe("equilibrado");
+        // só o perfil de entrada difere (um tem o campo ritmo, o outro não)
+        expect({ ...semRitmo, perfil: null }).toEqual({ ...equilibrado, perfil: null });
+      }
+    });
+
+    it("leve e equilibrado nunca são limitados pelo piso: aporte é a tabela, palavra por palavra", () => {
+      for (const ritmo of ["leve", "equilibrado"] as const) {
+        for (const c of comExcedente) {
+          const p = gerarPlano({ ...c, ritmo });
+          expect(p.piso.mordeu).toBe(false);
+          expect(p.aporte).toBe(arredondar(p.resumo.excedente * PROPORCAO_APORTE[ritmo][p.degrau]));
+        }
+      }
+    });
+
+    it("só o acelerado é limitado — e quando é, o plano diz o teto", () => {
+      let mordidas = 0;
+      for (const c of comExcedente) {
+        const p = gerarPlano({ ...c, ritmo: "acelerado" });
+        const pedido = arredondar(p.resumo.excedente * PROPORCAO_APORTE.acelerado[p.degrau]);
+        expect(p.piso.sugerido).toBe(pedido);
+        if (!p.piso.mordeu) {
+          expect(p.aporte).toBe(pedido);
+          continue;
+        }
+        mordidas++;
+        expect(p.aporte).toBe(p.piso.teto);
+        expect(p.aporte).toBeLessThan(p.piso.sugerido);
+        // o teto respeita a margem mínima da renda (ou o que o equilibrado deixaria livre)
+        const livreDoEquilibrado =
+          p.resumo.excedente * (1 - PROPORCAO_APORTE.equilibrado[p.degrau]);
+        expect(p.livre).toBeGreaterThanOrEqual(
+          Math.min(p.resumo.renda * MARGEM_MINIMA_CORTE, livreDoEquilibrado) - 0.01,
+        );
+      }
+      // se ninguém fosse limitado, o piso seria código morto e o teste, decorativo
+      expect(mordidas).toBeGreaterThan(0);
+    });
+
+    it("o acelerado nunca deixa menos de 10% da renda livre (renda 3.000, aluguel 1.000, fixo 800, rotativo 4.000, guardado 1.000)", () => {
+      const cenario: Perfil = perfil({
+        rendaMensal: 3000,
+        moradia: "aluguel",
+        custoMoradia: 1000,
+        gastosFixos: gastos(800),
+        dividas: [{ tipo: "rotativo", saldo: 4000 }],
+        guardado: 1000,
+      });
+      for (const ritmo of RITMOS) {
+        const p = gerarPlano({ ...cenario, ritmo });
+        expect(p.resumo.excedente).toBe(1200);
+        expect(p.degrau).toBe(1);
+        expect(p.livre).toBeGreaterThanOrEqual(p.resumo.renda * MARGEM_MINIMA_CORTE);
+      }
+      // o mesmo cenário sem o fôlego montado, onde o acelerado pede 0,75: o
+      // piso segura em R$ 900 e sobram exatamente os 10% da renda
+      const semFolego = gerarPlano({ ...cenario, guardado: 0, ritmo: "acelerado" });
+      expect(semFolego.degrau).toBe(0);
+      expect(semFolego.piso.sugerido).toBe(900);
+      expect(semFolego.aporte).toBe(900);
+      expect(semFolego.livre).toBe(300);
+      expect(semFolego.livre).toBe(semFolego.resumo.renda * MARGEM_MINIMA_CORTE);
+    });
+
+    it("o piso morde quando o acelerado passaria da margem: R$ 50 a mais de gasto e o teto aparece", () => {
+      const p = gerarPlano(
+        perfil({
+          rendaMensal: 3000,
+          moradia: "aluguel",
+          custoMoradia: 1000,
+          gastosFixos: gastos(850),
+          ritmo: "acelerado",
+        }),
+      );
+      expect(p.resumo.excedente).toBe(1150);
+      expect(p.degrau).toBe(0);
+      expect(p.piso).toEqual({ sugerido: 862.5, teto: 850, mordeu: true });
+      expect(p.aporte).toBe(850);
+      expect(p.livre).toBe(300);
+      esperarInvariantes(p);
+    });
+
+    /** null = "nunca, nesse ritmo": pro prazo, é o pior valor possível */
+    const prazos = (p: Plano) =>
+      [p.dividas.mesesParaQuitarCaras, p.reserva.mesesParaCompletar, p.dividas.mesesParaQuitarMedias].map(
+        (m) => (m === null ? Infinity : m),
+      );
+
+    it("monotonicidade: acelerado nunca projeta prazo maior que equilibrado, nem equilibrado maior que leve", () => {
+      for (const c of cenarios) {
+        const por = (ritmo: Ritmo) => prazos(gerarPlano({ ...c, ritmo }));
+        const leve = por("leve");
+        const equilibrado = por("equilibrado");
+        const acelerado = por("acelerado");
+        for (let i = 0; i < leve.length; i++) {
+          expect(equilibrado[i]).toBeLessThanOrEqual(leve[i]);
+          expect(acelerado[i]).toBeLessThanOrEqual(equilibrado[i]);
+        }
+      }
+    });
+
+    it("o aporte também é monotônico: leve ≤ equilibrado ≤ acelerado", () => {
+      for (const c of cenarios) {
+        const [leve, equilibrado, acelerado] = RITMOS.map((ritmo) => gerarPlano({ ...c, ritmo }).aporte);
+        expect(leve).toBeLessThanOrEqual(equilibrado);
+        expect(equilibrado).toBeLessThanOrEqual(acelerado);
+      }
+    });
   });
 });

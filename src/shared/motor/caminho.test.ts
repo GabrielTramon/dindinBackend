@@ -4,8 +4,9 @@
 */
 
 import { describe, expect, it } from "vitest";
-import { LIMIAR_DIVIDA_CARA, PROPORCAO_APORTE } from "./config";
+import { LIMIAR_DIVIDA_CARA, proporcaoAporte } from "./config";
 import { avaliarDividas, gerarPlano, simularQuitacao } from "./motor";
+import { RITMOS } from "./schema";
 import type { Perfil } from "./types";
 /** Açúcar dos testes: um gasto fixo único, pra cenários que só olham o total. */
 const gastos = (valor: number) => (valor > 0 ? [{ categoria: "mercado", valor }] : []);
@@ -68,10 +69,10 @@ describe("projeção da reserva", () => {
     // reserva alvo 5400, falta 5400 − 1440 = 3960 no ritmo do degrau 2 (600) → 7 meses
     const p = gerarPlano(base);
     expect(p.degrau).toBe(0);
-    const aporte0 = p.resumo.excedente * PROPORCAO_APORTE[0];
+    const aporte0 = p.resumo.excedente * proporcaoAporte(p.perfil.ritmo, 0);
     const mesesFolego = Math.ceil(p.folego.falta / aporte0);
     const faltaDepois = p.reserva.falta - mesesFolego * aporte0;
-    const aporte2 = p.resumo.excedente * PROPORCAO_APORTE[2];
+    const aporte2 = p.resumo.excedente * proporcaoAporte(p.perfil.ritmo, 2);
     expect(p.reserva.mesesParaCompletar).toBe(mesesFolego + Math.ceil(faltaDepois / aporte2));
     expect(p.reserva.mesesParaCompletar).toBe(9);
   });
@@ -117,6 +118,95 @@ describe("projeção da dívida média", () => {
     const meses = simularQuitacao([d], { extra: (m) => (m > 6 ? 800 : 0), regimeAPartirDe: 7 });
     expect(meses).not.toBeNull();
     expect(meses!).toBeGreaterThan(6);
+  });
+});
+
+describe("o ritmo atravessa as projeções", () => {
+  /** sobra pouca coisa em relação à renda: é onde o piso do acelerado morde */
+  const apertado: Perfil = {
+    ...base,
+    rendaMensal: 4000,
+    custoMoradia: 2000,
+    gastosFixos: gastos(1500),
+    guardado: 2000,
+  };
+
+  it("a projeção usa o aporte que o piso deixou, não o que o ritmo pediu", () => {
+    const acelerado = gerarPlano({ ...apertado, ritmo: "acelerado" });
+    const equilibrado = gerarPlano({ ...apertado, ritmo: "equilibrado" });
+    expect(acelerado.degrau).toBe(2);
+    expect(acelerado.piso.mordeu).toBe(true);
+    expect(acelerado.aporte).toBe(equilibrado.aporte);
+    // mesmo aporte efetivo, mesmo prazo. Se a projeção lesse a tabela do
+    // acelerado em vez do aporte, a reserva fecharia antes no papel e o plano
+    // estaria mentindo sobre o próprio número que mandou guardar.
+    expect(acelerado.reserva.mesesParaCompletar).toBe(
+      Math.ceil(acelerado.reserva.falta / acelerado.aporte),
+    );
+    expect(acelerado.reserva.mesesParaCompletar).toBe(equilibrado.reserva.mesesParaCompletar);
+  });
+
+  it("no leve o fôlego demora mais e a dívida cara é projetada com o ritmo leve", () => {
+    const comDivida = { ...base, dividas: [{ tipo: "rotativo", saldo: 2000 } as const] };
+    const leve = gerarPlano({ ...comDivida, ritmo: "leve" });
+    const acelerado = gerarPlano({ ...comDivida, ritmo: "acelerado" });
+    expect(leve.degrau).toBe(0);
+    expect(leve.aporte).toBe(540); // 1200 × 0,45
+    expect(acelerado.aporte).toBe(900); // 1200 × 0,75, dentro da margem
+    expect(leve.dividas.mesesParaQuitarCaras!).toBeGreaterThan(
+      acelerado.dividas.mesesParaQuitarCaras!,
+    );
+  });
+
+  it("quando o ritmo de hoje não quita mas outro quita, o plano diz qual e em quanto tempo", () => {
+    const naoQuitaNoLeve: Perfil = {
+      ...base,
+      rendaMensal: 3194.76,
+      custoMoradia: 0,
+      moradia: "pais",
+      gastosFixos: gastos(1181.38),
+      dividas: [{ tipo: "emprestimo", saldo: 21901.62, taxaAnual: 0.9 }],
+      guardado: 1000,
+    };
+    const leve = gerarPlano({ ...naoQuitaNoLeve, ritmo: "leve" });
+    const equilibrado = gerarPlano({ ...naoQuitaNoLeve, ritmo: "equilibrado" });
+    expect(leve.degrau).toBe(1);
+    expect(leve.dividas.mesesParaQuitarCaras).toBeNull();
+    expect(equilibrado.dividas.mesesParaQuitarCaras).not.toBeNull();
+    expect(leve.diagnosticoCaras).toEqual({
+      motivo: "juros",
+      ritmoQueResolve: "equilibrado",
+      mesesNoRitmoQueResolve: equilibrado.dividas.mesesParaQuitarCaras,
+    });
+    // o ritmo que resolve é o mais lento que resolve, não o mais rápido de todos
+    expect(equilibrado.diagnosticoCaras).toBeNull();
+  });
+
+  it("quando nenhum ritmo quita, não há saída por ritmo", () => {
+    const p = gerarPlano({ ...base, dividas: [{ tipo: "rotativo", saldo: 40000 }], ritmo: "leve" });
+    expect(p.dividas.mesesParaQuitarCaras).toBeNull();
+    expect(p.diagnosticoCaras).toEqual({
+      motivo: "juros",
+      ritmoQueResolve: null,
+      mesesNoRitmoQueResolve: null,
+    });
+    for (const ritmo of RITMOS) {
+      expect(gerarPlano({ ...base, dividas: [{ tipo: "rotativo", saldo: 40000 }], ritmo })
+        .dividas.mesesParaQuitarCaras).toBeNull();
+    }
+  });
+
+  it("com prazo, sem dívida cara, ou em modo corte, não há diagnóstico", () => {
+    expect(gerarPlano({ ...base, dividas: [{ tipo: "rotativo", saldo: 2000 }] }).diagnosticoCaras).toBeNull();
+    expect(gerarPlano(base).diagnosticoCaras).toBeNull();
+    // em corte o problema não é o ritmo: quem fala é o plano de corte
+    const corte = gerarPlano({
+      ...base,
+      gastosFixos: gastos(2500),
+      dividas: [{ tipo: "rotativo", saldo: 500 }],
+    });
+    expect(corte.modoCorte).toBe(true);
+    expect(corte.diagnosticoCaras).toBeNull();
   });
 });
 

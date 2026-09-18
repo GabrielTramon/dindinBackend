@@ -4,9 +4,10 @@
 */
 
 import { formatBRL, formatMeses, formatPct } from "./format";
-import { MARGEM_MINIMA_CORTE } from "./config";
+import { MARGEM_MINIMA_CORTE, MESES_SIMULACAO_MAX } from "./config";
 import type {
   Degrau,
+  DiagnosticoDividaCara,
   DividaAvaliada,
   Folego,
   GastoFixoDetalhado,
@@ -15,6 +16,7 @@ import type {
   QuadroDividas,
   Reserva,
   Resumo,
+  Ritmo,
   TipoDivida,
 } from "./types";
 
@@ -48,13 +50,22 @@ export const ROTULO_DEGRAU: Record<Degrau, string> = {
   4: "Metas",
 };
 
+/** Como o ritmo é chamado no meio de uma frase ("no ritmo equilibrado"). */
+export const ROTULO_RITMO: Record<Ritmo, string> = {
+  leve: "leve",
+  equilibrado: "equilibrado",
+  acelerado: "acelerado",
+};
+
 interface Contexto {
   perfil: Perfil;
   resumo: Resumo;
   degrau: Degrau;
+  ritmo: Ritmo;
   folego: Folego;
   reserva: Reserva;
   dividas: QuadroDividas;
+  diagnosticoCaras: DiagnosticoDividaCara | null;
   corte: PlanoDeCorte | null;
   aporte: number;
   livre: number;
@@ -109,6 +120,37 @@ function decisao(c: Contexto): { titulo: string; texto: string } {
   }
 }
 
+/**
+ * O aviso de dívida cara sem prazo.
+ *
+ * "É o único caminho" só pode sair quando NENHUM dos três ritmos zera a dívida.
+ * Medido em milhares de perfis: no leve uma parte deles nunca zera e no
+ * equilibrado zera em três anos — afirmar que só a renegociação resolve, ao
+ * lado de um cartão que oferece o outro caminho, é mentira.
+ *
+ * A causa também muda a frase: "os juros crescem mais rápido do que você paga"
+ * é falso quando a dívida cai, só que devagar demais pro horizonte da conta.
+ */
+function semPrazoCaras(c: Contexto): string {
+  const d = c.diagnosticoCaras;
+  const horizonte = d?.motivo === "horizonte";
+  const uma = c.dividas.caras.length === 1;
+  const sujeito = uma ? NOME_DIVIDA[c.dividas.caras[0].tipo] : "as dívidas caras";
+  const prazoMaximo = formatMeses(MESES_SIMULACAO_MAX);
+
+  if (d?.ritmoQueResolve && d.mesesNoRitmoQueResolve !== null) {
+    const causa = horizonte
+      ? `${sujeito} ${uma ? "levaria" : "levariam"} mais de ${prazoMaximo} pra zerar`
+      : "os juros crescem mais rápido do que você paga";
+    return `Neste ritmo, ${causa}. No ritmo ${ROTULO_RITMO[d.ritmoQueResolve]} — que guarda uma fatia maior do que sobra — ${sujeito} ${uma ? "zera" : "zeram"} em ${formatMeses(d.mesesNoRitmoQueResolve)}.`;
+  }
+
+  const causa = horizonte
+    ? `as dívidas caras levariam mais de ${prazoMaximo} pra zerar`
+    : "os juros das dívidas caras crescem mais rápido do que você paga";
+  return `Atenção: com o aporte de hoje, ${causa}. Renegociar ou trocar por uma linha mais barata não é opcional — é o único caminho.`;
+}
+
 function proximosPassos(c: Contexto): string[] {
   const passos: string[] = [];
 
@@ -130,9 +172,7 @@ function proximosPassos(c: Contexto): string[] {
   if (c.dividas.caras.length > 0) {
     const m = c.dividas.mesesParaQuitarCaras;
     if (m === null) {
-      passos.push(
-        `Atenção: com o aporte de hoje, os juros das dívidas caras crescem mais rápido do que você paga. Renegociar ou trocar por uma linha mais barata não é opcional — é o único caminho.`,
-      );
+      passos.push(semPrazoCaras(c));
     } else {
       passos.push(`Mantendo esse ritmo, as dívidas caras zeram em ${formatMeses(m)}. Cada mês a menos economiza ${formatBRL(c.dividas.jurosMensaisCaras)} de juros.`);
     }

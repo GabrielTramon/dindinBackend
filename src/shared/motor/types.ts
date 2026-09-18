@@ -11,6 +11,32 @@
 
 export type TipoRenda = "clt" | "pj" | "informal";
 
+/** O que a pessoa digitou no campo de renda: o salário bruto ou o que cai na conta. */
+export type RendaInformada = "bruta" | "liquida";
+
+/**
+ * Quanto do que sobra vira aporte. Não muda a ordem da cascata — só o tamanho
+ * do passo. A tabela por degrau está em config.ts (PROPORCAO_APORTE).
+ */
+export type Ritmo = "leve" | "equilibrado" | "acelerado";
+
+export type MetaTipo =
+  | "carro"
+  | "casa"
+  | "liberdade"
+  | "emergencia"
+  | "viagem"
+  | "estudos"
+  | "outro";
+
+/** A meta principal: uma só, escolhida no onboarding. */
+export interface Meta {
+  tipo: MetaTipo;
+  /** obrigatório quando o tipo é "outro" */
+  nome?: string;
+  valorAlvo: number;
+}
+
 export type Moradia = "pais" | "aluguel" | "dividido" | "propria" | "financiada";
 
 export type TipoDivida =
@@ -40,10 +66,30 @@ export interface GastoFixo {
   valor: number;
 }
 
-/** As 8 respostas do onboarding. */
+/**
+ * As 9 respostas do onboarding.
+ *
+ * Os campos opcionais são todos posteriores à v1 e por isso nunca obrigatórios:
+ * perfil salvo no navegador antes deles continua válido. Ausente é sempre
+ * `undefined`, nunca `null` — é o que mantém o snapshot do plano estável.
+ */
 export interface Perfil {
-  /** renda líquida mensal, em reais */
+  /**
+   * renda LÍQUIDA mensal, em reais — é o número que todo o motor usa.
+   * Quando a pessoa informa o bruto, este campo recebe o líquido calculado.
+   */
   rendaMensal: number;
+  /** o que a pessoa digitou; ausente = "liquida" (como era antes do cálculo de bruto) */
+  rendaInformada?: RendaInformada;
+  /** o bruto informado, guardado como registro; o motor não recalcula a partir dele */
+  salarioBruto?: number;
+  /** dependentes para o IRRF */
+  dependentes?: number;
+  /** competência da tabela que gerou o líquido, ex.: "2026-01" — em janeiro avisa que mudou */
+  competenciaTabela?: string;
+  /** ausente = "equilibrado" */
+  ritmo?: Ritmo;
+  meta?: Meta;
   tipoRenda: TipoRenda;
   idade: number;
   moradia: Moradia;
@@ -157,6 +203,36 @@ export interface Decisao {
   texto: string;
 }
 
+/**
+ * Como o piso do que fica livre tratou o aporte deste mês. Existe pra tela
+ * poder explicar um número que não é o da tabela do ritmo: "nesse ritmo o
+ * máximo aqui é R$ X — abaixo disso o plano não se sustenta".
+ */
+export interface PisoAporte {
+  /** o que o ritmo escolhido pediria, sem piso nenhum */
+  sugerido: number;
+  /** o teto que o piso deixa passar neste degrau */
+  teto: number;
+  /** true quando o teto cortou o sugerido — só acontece no acelerado */
+  mordeu: boolean;
+}
+
+/** Por que uma simulação de quitação não terminou. */
+export type MotivoSemQuitacao = "juros" | "horizonte";
+
+/**
+ * Por que as dívidas caras não têm prazo neste plano — e se outro ritmo
+ * resolve. Sem isso o texto afirma "é o único caminho" ao lado de um cartão
+ * que oferece justamente o outro caminho.
+ */
+export interface DiagnosticoDividaCara {
+  motivo: MotivoSemQuitacao;
+  /** o ritmo mais lento, entre os três, que zera as caras; null = nenhum zera */
+  ritmoQueResolve: Ritmo | null;
+  /** prazo nesse ritmo, em meses; null quando nenhum resolve */
+  mesesNoRitmoQueResolve: number | null;
+}
+
 export interface Plano {
   perfil: Perfil;
   resumo: Resumo;
@@ -166,13 +242,22 @@ export interface Plano {
   corte: PlanoDeCorte | null;
   degrau: Degrau;
   decisao: Decisao;
+  /** o ritmo que gerou este plano — já resolvido (perfil.ritmo ou o padrão) */
+  ritmo: Ritmo;
   /** parte do excedente que vai pra cascata este mês */
   aporte: number;
+  /** de onde saiu o aporte: o que o ritmo pedia e o teto que o piso impôs */
+  piso: PisoAporte;
   /** parte do excedente que fica livre pra gastos variáveis */
   livre: number;
   alocacoes: Alocacao[];
   folego: Folego;
   reserva: Reserva;
   dividas: QuadroDividas;
+  /**
+   * só existe quando há dívida cara sem prazo fora do modo corte; null quando
+   * há prazo, quando não há dívida cara, ou em modo corte (aí quem fala é `corte`)
+   */
+  diagnosticoCaras: DiagnosticoDividaCara | null;
   proximosPassos: string[];
 }
