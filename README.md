@@ -19,7 +19,7 @@ src/
   main/            composição — o ÚNICO lugar que escolhe implementações
     config.ts        ambiente validado de uma vez (falta algo → não sobe e diz o quê)
     container.ts     Prisma | memória · Resend | console · relógio · ids · JWT
-    routes.ts        pluga os 9 módulos em /api/v1 e liga as portas entre eles
+    routes.ts        pluga os 10 módulos em /api/v1 e liga as portas entre eles
     app.ts           Express: request-id, helmet, CORS, JSON 100 kb, erros
     server.ts        boot + encerramento gracioso (SIGTERM/SIGINT)
     jobs/            CLIs agendados fora da API (abrir-check-ins.ts)
@@ -40,7 +40,8 @@ Uma requisição: `app.ts` → router do módulo → `parseBody/parseParams/pars
 **Grafo de módulos** — um módulo só importa outro pelo `index.ts`, e só nestas arestas (verificado por `src/test/architecture.test.ts`):
 
 ```
-identidade, categorias, dividas, metas, planos  → (nenhum módulo)
+identidade, categorias, dividas, metas, planos,
+organizacao                                     → (nenhum módulo)
 gastos-fixos                                    → categorias
 perfil                                          → categorias, gastos-fixos, dividas
 check-ins                                       → planos, identidade
@@ -204,6 +205,17 @@ Em qualquer rota, além dos status listados: `400 JSON_INVALIDO`, `413` (corpo a
 | GET | `/check-ins` | sessão | meses respondidos/abertos, do mais recente | 200 · 400 · 401 |
 | GET | `/check-ins/:competencia` | sessão | um mês (`AAAA-MM`) com a comparação com o plano atual | 200 · 400 · 401 · 404 |
 | PUT | `/check-ins/:competencia` | sessão | `{ rendaReal, gastoReal, guardadoReal }` — abre se o job ainda não abriu; mês futuro é 400 | 200 · 400 · 401 · 409 |
+
+A comparação usa a versão do plano **que valia naquele mês** (`findEmVigorEm`), não a mais nova: trocar o ritmo em setembro não reescreve o veredito de agosto. Quem ainda não tinha plano no mês perguntado compara com a versão mais antiga dela.
+
+### Organização do excedente (`organizacao`)
+
+| Método | Caminho | Auth | O que faz | Status |
+| --- | --- | --- | --- | --- |
+| GET | `/organizacao` | sessão | a árvore de grupos do excedente; sem nada organizado, `{ grupos: [] }` | 200 · 401 |
+| PUT | `/organizacao` | sessão | substitui a árvore inteira: `{ grupos: [{ id, nome, icone?, valor, contaParaMeta?, rendimentoMensal?, doSistema?, itens? }] }` | 200 · 400 · 401 |
+
+O corpo da resposta é exatamente o corpo do próximo PUT (sem dono, sem ordem, sem data), porque a mesma árvore vive no `localStorage` do aparelho. O id vem do cliente e a chave primária é composta com o dono.
 
 ## Formato de erro
 

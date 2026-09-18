@@ -48,16 +48,25 @@ src/
   - `main/` usa módulos só pelo `index.ts` ou pelo `infra.ts`.
 - O grafo não tem ciclo:
   ```
-  identidade, categorias, dividas, metas, planos → (nenhum módulo)
+  identidade, categorias, dividas, metas, planos, organizacao → (nenhum módulo)
   gastos-fixos → categorias
   perfil       → categorias, gastos-fixos, dividas
   check-ins    → planos, identidade
-  privacidade  → todos
+  privacidade  → todos (organizacao inclusive: exportar e excluir alcançam os grupos)
   ```
   Quando um módulo precisa de algo de outro sem poder importá-lo, ele declara uma porta em `application/ports.ts` e o main liga:
   - `gastos-fixos` e `dividas` perguntam se o perfil existe via `PerfilGateway` (perfil depende deles, então não podem importar perfil);
   - `planos` recebe o perfil completo no formato do motor via `PerfilDoMotorReader`, ligado ao `CarregarPerfilDoMotorUseCase` de `perfil`.
 - **Tudo isso é verificado por `src/test/architecture.test.ts`** (roda no `yarn test`). Módulo novo ou aresta nova: atualize o `GRAFO` de lá e este diagrama juntos.
+
+### Campos novos no perfil (a lição de 18/09/2026)
+
+O perfil ganhou renda informada, salário bruto, dependentes, competência da tabela, ritmo, aporte escolhido e meta — todos **opcionais**. Opcional é o modo mais fácil de perder dado em silêncio aqui, porque o projeto copia campo a campo de propósito e o TypeScript não acusa a falta:
+
+- São **oito** listas entre o corpo HTTP e o banco: `Perfil.criar`, `validar`, `atualizar`, `toDados`, o mapper (ida e volta), `salvarPerfilBody`/`atualizarPerfilBody`, as rotas, os dois presenters e `SincronizarPerfilCompletoUseCase`. Esquecer uma delas = 200 mudo, escolha perdida no F5, ou exportação LGPD incompleta.
+- No domínio, ausente é **`undefined`, nunca `null`**, e `toDados`/`toSnapshot` **omitem a chave**: é isso que mantém o `inputSnap` de quem já tem plano idêntico ao de antes. No mapper, a ida usa spread condicional (`?? undefined` deixaria a chave presente) e a volta usa `?? null` (é o null que apaga a coluna).
+- **PUT substitui, PATCH mescla.** `Perfil.substituir` apaga opcional ausente — sem isso a escolha ficaria gravada pra sempre. Limpar um campo é o PUT sem ele.
+- O que prova tudo isso é o contrato do repositório (roda em memória e no Postgres) mais o passo do e2e que vai do PATCH até o `inputSnap` da versão gravada.
 
 ### Nomes
 
