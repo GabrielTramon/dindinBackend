@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ValidationError } from '../../../shared/domain/errors';
-import { CheckIn, competenciaAnterior, competenciaDe, competenciaValida } from './check-in';
+import { CheckIn, competenciaAnterior, competenciaDe, competenciaValida, fimDaCompetencia } from './check-in';
 
 describe('competência', () => {
   it('usa o fuso de São Paulo: 02:30 UTC do dia 1 ainda é o mês anterior', () => {
@@ -17,6 +17,27 @@ describe('competência', () => {
 
   it.each(['2026-9', '2026-13', '2026-00', '1999-01', '2101-01', 'abc'])('inválida %j', (c) => {
     expect(competenciaValida(c)).toBe(false);
+  });
+});
+
+describe('fimDaCompetencia', () => {
+  // o valor exato que o contrato de VersoesPlanoRepository repete como literal
+  it('é o primeiro instante do mês seguinte em São Paulo, virando o ano', () => {
+    expect(fimDaCompetencia('2026-08').toISOString()).toBe('2026-09-01T03:00:00.000Z');
+    expect(fimDaCompetencia('2026-12').toISOString()).toBe('2027-01-01T03:00:00.000Z');
+    // fevereiro e mês de 31 dias saem do calendário, não de aritmética de dias
+    expect(fimDaCompetencia('2026-02').toISOString()).toBe('2026-03-01T03:00:00.000Z');
+    expect(fimDaCompetencia('2026-01').toISOString()).toBe('2026-02-01T03:00:00.000Z');
+  });
+
+  it('é limite EXCLUSIVO: o instante devolvido já é do mês seguinte, e o anterior ainda é do mês', () => {
+    const corte = fimDaCompetencia('2026-08');
+    expect(competenciaDe(corte)).toBe('2026-09');
+    expect(competenciaDe(new Date(corte.getTime() - 1))).toBe('2026-08');
+  });
+
+  it.each(['2026-13', '2026-9', 'setembro', ''])('competência inválida %j → ValidationError', (competencia) => {
+    expect(() => fimDaCompetencia(competencia)).toThrow(ValidationError);
   });
 });
 

@@ -21,6 +21,19 @@ export class PrismaVersoesPlanoRepository implements VersoesPlanoRepository {
     return row ? toDomain(row) : null;
   }
 
+  async findEmVigorEm(subscriberId: string, ate: Date): Promise<VersaoPlano | null> {
+    // versao e criadoEm são monotônicos juntos: o where filtra por data e o
+    // orderBy é por versão, que é única por pessoa e não tem empate a desempatar
+    const vigente = await this.db.client.plan.findFirst({
+      where: { subscriberId, criadoEm: { lt: ate } },
+      orderBy: { versao: 'desc' },
+    });
+    if (vigente) return toDomain(vigente);
+    // nenhuma versão até lá (cadastro depois do mês perguntado): a mais antiga
+    const primeira = await this.db.client.plan.findFirst({ where: { subscriberId }, orderBy: { versao: 'asc' } });
+    return primeira ? toDomain(primeira) : null;
+  }
+
   async list(subscriberId: string, page: PageRequest): Promise<Page<VersaoPlano>> {
     const antesDe = decodeIntCursor(page.cursor);
     const rows = await this.db.client.plan.findMany({

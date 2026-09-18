@@ -70,14 +70,19 @@ export function describeVersoesPlanoRepositoryContract(
       h = await setup();
     });
 
-    const versaoDe = (subscriberId: string, versao: number, perfil: PerfilDoMotor = PERFIL_COM_DIVIDA) =>
+    const versaoDe = (
+      subscriberId: string,
+      versao: number,
+      perfil: PerfilDoMotor = PERFIL_COM_DIVIDA,
+      criadoEm: Date = agora,
+    ) =>
       VersaoPlano.criar({
         id: novoId(),
         subscriberId,
         versao,
         inputSnap: perfil,
         resultado: gerarPlano(structuredClone(perfil)),
-        criadoEm: agora,
+        criadoEm,
       });
 
     const salvarVersoes = async (subscriberId: string, versoes: number[]) => {
@@ -144,6 +149,47 @@ export function describeVersoesPlanoRepositoryContract(
       await salvarVersoes(b, [7]);
       expect((await h.repo.findLatest(a))?.versao).toBe(2);
       expect((await h.repo.findLatest(a))?.subscriberId).toBe(a);
+    });
+
+    /*
+      O primeiro instante de setembro em São Paulo — o que `check-ins` calcula
+      como fimDaCompetencia('2026-08'). Literal de propósito: o grafo não deixa
+      `planos` importar `check-ins` (nem em teste), e o valor é provado em
+      check-ins/domain/check-in.test.ts.
+    */
+    const FIM_DE_AGOSTO = new Date('2026-09-01T03:00:00.000Z');
+
+    it('findEmVigorEm: a última gravada ANTES do instante; o milissegundo do corte já é do mês seguinte', async () => {
+      const sub = await h.criarSubscriber();
+      await h.repo.save(versaoDe(sub, 1, PERFIL_COM_DIVIDA, new Date('2026-09-01T02:59:59.999Z')));
+      await h.repo.save(versaoDe(sub, 2, PERFIL_EM_CORTE, FIM_DE_AGOSTO));
+
+      // trocar o ritmo em setembro não reescreve o veredito de agosto
+      const emAgosto = await h.repo.findEmVigorEm(sub, FIM_DE_AGOSTO);
+      expect(emAgosto?.versao).toBe(1);
+      expect(emAgosto?.inputSnap).toEqual(PERFIL_COM_DIVIDA);
+      // setembro, esse sim, é medido pela versão nova
+      expect((await h.repo.findEmVigorEm(sub, new Date('2026-10-01T03:00:00.000Z')))?.versao).toBe(2);
+    });
+
+    it('findEmVigorEm sem nenhuma versão até lá → a MAIS ANTIGA (cadastro em setembro respondendo agosto)', async () => {
+      const sub = await h.criarSubscriber();
+      // gravadas fora de ordem: a "mais antiga" é a menor versão, não a primeira gravada
+      await h.repo.save(versaoDe(sub, 2, PERFIL_EM_CORTE, new Date('2026-09-18T12:00:00.000Z')));
+      await h.repo.save(versaoDe(sub, 1, PERFIL_COM_DIVIDA, new Date('2026-09-17T12:00:00.000Z')));
+
+      const plano = await h.repo.findEmVigorEm(sub, FIM_DE_AGOSTO);
+      expect(plano?.versao).toBe(1);
+      expect(plano?.inputSnap).toEqual(PERFIL_COM_DIVIDA);
+    });
+
+    it('findEmVigorEm: sem plano nenhum é null e nunca devolve o de outra pessoa', async () => {
+      const [a, b] = [await h.criarSubscriber(), await h.criarSubscriber()];
+      expect(await h.repo.findEmVigorEm(a, FIM_DE_AGOSTO)).toBeNull();
+
+      await h.repo.save(versaoDe(b, 1, PERFIL_COM_DIVIDA, new Date('2026-08-10T12:00:00.000Z')));
+      expect(await h.repo.findEmVigorEm(a, FIM_DE_AGOSTO)).toBeNull();
+      expect((await h.repo.findEmVigorEm(b, FIM_DE_AGOSTO))?.subscriberId).toBe(b);
     });
 
     it('list: da mais nova pra mais antiga, paginada por cursor, só as da pessoa', async () => {

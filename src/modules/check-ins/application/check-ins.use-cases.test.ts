@@ -99,6 +99,8 @@ async function gerarVersao(
   versao: number,
   perfil: PerfilDoMotor = ANA,
   ajuste: { aporte?: number; livre?: number } = {},
+  // a data importa: a comparação usa a versão que valia no mês do check-in
+  criadoEm: Date = clock.now(),
 ): Promise<VersaoPlano> {
   const v = VersaoPlano.criar({
     id: `plano-${subscriberId}-${versao}`,
@@ -106,7 +108,7 @@ async function gerarVersao(
     versao,
     inputSnap: perfil,
     resultado: { ...gerarPlano(structuredClone(perfil)), ...ajuste },
-    criadoEm: clock.now(),
+    criadoEm,
   });
   await versoesPlano.save(v);
   return v;
@@ -180,8 +182,9 @@ describe('ResponderCheckInUseCase', () => {
     expect(lido?.toSnapshot()).toMatchObject({ rendaReal: 3300, gastoReal: 2600, guardadoReal: 700, respondidoEm: clock.now() });
   });
 
-  it('compara com a ÚLTIMA versão do plano: guardou mais → diferença positiva e cumpriu', async () => {
-    await gerarVersao('sub-1', 1, ANA, { aporte: 100, livre: 50 });
+  it('compara com a versão que valia no mês: guardou mais → diferença positiva e cumpriu', async () => {
+    // as duas nasceram dentro de setembro; a que vale pro mês é a mais nova
+    await gerarVersao('sub-1', 1, ANA, { aporte: 100, livre: 50 }, new Date('2026-09-02T12:00:00.000Z'));
     await gerarVersao('sub-1', 2, ANA, { aporte: 500.3, livre: 300.2 });
 
     const { comparacao } = await responder().execute({
@@ -199,6 +202,35 @@ describe('ResponderCheckInUseCase', () => {
       cumpriu: true,
       versaoDoPlano: 2,
     });
+  });
+
+  it('plano gravado depois do mês não vale pra ele: agosto é julgado pelo plano de agosto', async () => {
+    await gerarVersao('sub-1', 1, ANA, { aporte: 400, livre: 200 }, new Date('2026-08-05T12:00:00.000Z'));
+    // em setembro a pessoa trocou o ritmo e o recálculo gravou a versão 2
+    await gerarVersao('sub-1', 2, ANA, { aporte: 900, livre: 100 });
+
+    const { comparacao } = await responder().execute({
+      subscriberId: 'sub-1',
+      competencia: '2026-08',
+      rendaReal: 3200,
+      gastoReal: 2700,
+      guardadoReal: 500,
+    });
+    expect(comparacao).toMatchObject({ aportePlanejado: 400, diferenca: 100, cumpriu: true, versaoDoPlano: 1 });
+  });
+
+  it('quem se cadastrou depois do mês perguntado compara com a versão mais antiga, não com null', async () => {
+    // cadastro em setembro; o e-mail do dia 1º pede o check-in de agosto
+    await gerarVersao('sub-1', 1, ANA, { aporte: 400, livre: 200 });
+
+    const { comparacao } = await responder().execute({
+      subscriberId: 'sub-1',
+      competencia: '2026-08',
+      rendaReal: 3200,
+      gastoReal: 2900,
+      guardadoReal: 300,
+    });
+    expect(comparacao).toMatchObject({ aportePlanejado: 400, diferenca: -100, cumpriu: false, versaoDoPlano: 1 });
   });
 
   it('guardou menos: diferença negativa com 2 casas (sem lixo de ponto flutuante) e não cumpriu', async () => {
@@ -379,7 +411,36 @@ describe('ObterCheckInUseCase', () => {
     });
   });
 
+  it('trocar o ritmo em setembro não reescreve agosto: reler o mês dá o veredito idêntico', async () => {
+    await gerarVersao('sub-1', 1, ANA, { aporte: 400, livre: 200 }, new Date('2026-08-05T12:00:00.000Z'));
+    await responder().execute({
+      subscriberId: 'sub-1',
+      competencia: '2026-08',
+      rendaReal: 3200,
+      gastoReal: 2800,
+      guardadoReal: 400,
+    });
+    const naHora = await obter().execute({ subscriberId: 'sub-1', competencia: '2026-08' });
+    expect(naHora.comparacao).toMatchObject({ aportePlanejado: 400, cumpriu: true, versaoDoPlano: 1 });
+
+    // a pessoa troca o ritmo pra acelerado e o recálculo grava a versão 2
+    await gerarVersao('sub-1', 2, ANA, { aporte: 900, livre: 100 });
+
+    const depois = await obter().execute({ subscriberId: 'sub-1', competencia: '2026-08' });
+    expect(depois.comparacao).toEqual(naHora.comparacao);
+    // setembro, esse sim, passa a ser medido pelo plano novo
+    const setembro = await responder().execute({
+      subscriberId: 'sub-1',
+      competencia: '2026-09',
+      rendaReal: 3200,
+      gastoReal: 2300,
+      guardadoReal: 900,
+    });
+    expect(setembro.comparacao).toMatchObject({ aportePlanejado: 900, cumpriu: true, versaoDoPlano: 2 });
+  });
+
   it('aberto e sem resposta: o planejado vem; real, diferença e cumpriu ficam null', async () => {
+    // plano gerado só em setembro: agosto cai no fallback e compara com a versão mais antiga
     await gerarVersao('sub-1', 1, ANA, { aporte: 400, livre: 200 });
     await checkIns.save(CheckIn.abrir({ id: 'do-job', subscriberId: 'sub-1', competencia: '2026-08', agora: clock.now() }));
 

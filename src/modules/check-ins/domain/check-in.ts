@@ -43,6 +43,54 @@ export function competenciaAnterior(data: Date, timeZone = FUSO_DO_PRODUTO): str
   return mes === 1 ? `${ano - 1}-12` : `${ano}-${String(mes - 1).padStart(2, '0')}`;
 }
 
+/**
+ * Quanto o fuso está à frente do UTC naquele instante, em milissegundos
+ * (São Paulo: −3 h). Formatar o instante no fuso e reler os números como se
+ * fossem UTC dá exatamente a diferença — sem tabela de offset escrita à mão,
+ * que envelhece quando o país mexe no horário de verão.
+ */
+function deslocamentoDoFuso(instante: Date, timeZone: string): number {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(instante);
+  const n = (tipo: string) => Number(partes.find((p) => p.type === tipo)?.value);
+  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - instante.getTime();
+}
+
+/** A meia-noite do dia 1 daquele mês no fuso, como instante UTC. */
+function meiaNoiteDoMes(ano: number, mes: number, timeZone: string): Date {
+  const palpite = Date.UTC(ano, mes - 1, 1);
+  // duas passadas: a primeira corrige com o deslocamento do palpite, a segunda
+  // com o do instante já corrigido — é o que acerta a borda de horário de verão
+  const corrigido = palpite - deslocamentoDoFuso(new Date(palpite), timeZone);
+  return new Date(palpite - deslocamentoDoFuso(new Date(corrigido), timeZone));
+}
+
+/**
+ * O PRIMEIRO INSTANTE da competência seguinte, no fuso do produto:
+ * "2026-08" → 2026-09-01T03:00:00.000Z (meia-noite de 1º de setembro em São Paulo).
+ *
+ * É um limite superior EXCLUSIVO: quem pergunta "o que valia durante agosto?"
+ * consulta `criadoEm < fimDaCompetencia('2026-08')`. Nada de fim de mês
+ * calculado à mão — 23:59:59.999 perde o que foi gravado no último
+ * milissegundo do mês, e "dia 31" erra em fevereiro.
+ *
+ * Mora aqui porque `check-ins` é quem conhece competência e FUSO_DO_PRODUTO;
+ * `planos` recebe o instante pronto (o grafo não deixa planos depender daqui).
+ */
+export function fimDaCompetencia(competencia: string, timeZone = FUSO_DO_PRODUTO): Date {
+  ensure(competenciaValida(competencia), 'competencia', MENSAGEM_COMPETENCIA_INVALIDA);
+  const [ano, mes] = competencia.split('-').map(Number) as [number, number];
+  return mes === 12 ? meiaNoiteDoMes(ano + 1, 1, timeZone) : meiaNoiteDoMes(ano, mes + 1, timeZone);
+}
+
 function ensureNaoFutura(competencia: string, agora: Date): void {
   // "AAAA-MM" compara certo como texto
   ensure(competencia <= competenciaDe(agora), 'competencia', 'Esse mês ainda não chegou');

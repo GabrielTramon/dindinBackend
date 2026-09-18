@@ -34,6 +34,16 @@ export class InMemoryVersoesPlanoRepository implements VersoesPlanoRepository {
     return row ? this.restore(row) : null;
   }
 
+  async findEmVigorEm(subscriberId: string, ate: Date): Promise<VersaoPlano | null> {
+    const versoes = this.doSubscriber(subscriberId);
+    // versao e criadoEm são monotônicos juntos: percorrendo da maior versão pra
+    // menor, a primeira que já existia naquele instante é a que valia
+    const vigente = versoes.find((r) => r.criadoEm.getTime() < ate.getTime());
+    // sem nenhuma até lá, a mais antiga (a lista está em versão desc)
+    const row = vigente ?? versoes.at(-1);
+    return row ? this.restore(row) : null;
+  }
+
   async list(subscriberId: string, page: PageRequest): Promise<Page<VersaoPlano>> {
     const antesDe = decodeIntCursor(page.cursor);
     const rows = this.doSubscriber(subscriberId).filter((r) => antesDe === undefined || r.versao < antesDe);

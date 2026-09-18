@@ -1,10 +1,16 @@
 import type { VersaoPlano, VersoesPlanoRepository } from '../../planos';
-import type { CheckIn } from '../domain/check-in';
+import { fimDaCompetencia, type CheckIn } from '../domain/check-in';
 
 /*
-  O mês real contra o plano. A comparação é com a ÚLTIMA versão do plano da
-  pessoa: é o plano que ela está seguindo agora, e o check-in existe pra dizer
-  se o mês bateu com ele. Sem plano gerado, não há com o que comparar (null).
+  O mês real contra o plano. A comparação é com a versão do plano que VALIA
+  NAQUELE MÊS (a mais nova gravada antes de o mês acabar), não com a última de
+  hoje: com o seletor de ritmo a um toque, trocar o ritmo em setembro mudaria o
+  veredito de agosto de "cumpriu" pra "não cumpriu". O passado não se reescreve.
+
+  Quem se cadastrou depois do mês perguntado não tem versão nenhuma até lá — o
+  e-mail do dia 1º pede justamente o mês que acabou. Nesse caso o repositório
+  devolve a versão mais antiga da pessoa, e a comparação existe. Sem plano
+  nenhum, não há com o que comparar (null).
 
   Modo corte: quando os custos passam da renda, o motor não pede aporte
   (aporte = 0) — a meta do mês é cortar gasto, não guardar. Por isso `cumpriu`
@@ -60,6 +66,7 @@ export async function comComparacao(
   versoesPlano: VersoesPlanoRepository,
   checkIn: CheckIn,
 ): Promise<CheckInComComparacao> {
-  const plano = await versoesPlano.findLatest(checkIn.subscriberId);
+  // limite exclusivo: o primeiro instante do mês seguinte no fuso do produto
+  const plano = await versoesPlano.findEmVigorEm(checkIn.subscriberId, fimDaCompetencia(checkIn.competencia));
   return { checkIn, comparacao: compararComPlano(checkIn, plano) };
 }
