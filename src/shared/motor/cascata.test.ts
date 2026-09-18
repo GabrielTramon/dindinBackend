@@ -762,11 +762,11 @@ describe("cascata — invariantes em lote", () => {
         expect(p.degrau).toBe(1);
         expect(p.livre).toBeGreaterThanOrEqual(p.resumo.renda * MARGEM_MINIMA_CORTE);
       }
-      // o mesmo cenário sem o fôlego montado, onde o acelerado pede 0,75: o
-      // piso segura em R$ 900 e sobram exatamente os 10% da renda
+      // o mesmo cenário sem o fôlego montado, onde o acelerado pede 0,80 (R$ 960):
+      // o piso segura em R$ 900 e sobram exatamente os 10% da renda
       const semFolego = gerarPlano({ ...cenario, guardado: 0, ritmo: "acelerado" });
       expect(semFolego.degrau).toBe(0);
-      expect(semFolego.piso.sugerido).toBe(900);
+      expect(semFolego.piso.sugerido).toBe(960);
       expect(semFolego.aporte).toBe(900);
       expect(semFolego.livre).toBe(300);
       expect(semFolego.livre).toBe(semFolego.resumo.renda * MARGEM_MINIMA_CORTE);
@@ -784,7 +784,7 @@ describe("cascata — invariantes em lote", () => {
       );
       expect(p.resumo.excedente).toBe(1150);
       expect(p.degrau).toBe(0);
-      expect(p.piso).toEqual({ sugerido: 862.5, teto: 850, mordeu: true });
+      expect(p.piso).toEqual({ sugerido: 920, teto: 850, mordeu: true });
       expect(p.aporte).toBe(850);
       expect(p.livre).toBe(300);
       esperarInvariantes(p);

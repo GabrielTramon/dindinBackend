@@ -115,6 +115,11 @@ export const perfilSchema = z.object({
     .optional(),
   competenciaTabela: z.string().optional(),
   ritmo: z.enum(RITMOS).optional(),
+  aporteEscolhido: z
+    .number()
+    .nonnegative({ error: "Não pode ser negativo" })
+    .max(1_000_000, { error: "Confere esse valor? Está muito alto" })
+    .optional(),
   meta: metaSchema.optional(),
   tipoRenda: z.enum(TIPOS_RENDA, { error: "Escolha como é a sua renda" }),
   idade: z

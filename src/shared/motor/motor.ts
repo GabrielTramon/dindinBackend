@@ -553,7 +553,7 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
   const modoCorte = resumo.excedente <= 0;
 
   const ritmo = perfil.ritmo ?? RITMO_PADRAO;
-  const aporteDe = aportePorDegrau(resumo.excedente, perfil.rendaMensal, ritmo, opcoes.aporteEscolhido);
+  const aporteDe = aportePorDegrau(resumo.excedente, perfil.rendaMensal, ritmo, opcoes.aporteEscolhido ?? perfil.aporteEscolhido);
   const doMes = aporteDe(degrau);
   const aporte = modoCorte ? 0 : doMes.valor;
   const piso: PisoAporte = modoCorte

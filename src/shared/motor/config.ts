@@ -56,14 +56,15 @@ export const MULTIPLICADOR_RESERVA: Record<TipoRenda, 3 | 6> = {
  * "equilibrado" é a tabela original, palavra por palavra: quem não escolhe ritmo
  * recebe exatamente o plano de sempre.
  *
- * O acelerado NÃO vai a 0,9 no degrau 1: isso deixaria R$ 120 por mês pra quem
- * ganha R$ 3.000, enquanto MARGEM_MINIMA_CORTE declara que abaixo de 10% da renda
- * nem existe plano. O piso que garante isso está em motor.ts, não aqui.
+ * Quem protege a sobra é o piso em motor.ts (nunca menos de 10% da renda livre,
+ * e nunca menos do que o equilibrado guardaria), não um teto baixo aqui. Foi o
+ * que a tela provou: com 0,70 no degrau 1 o acelerado mostrava exatamente o
+ * mesmo número do equilibrado — um cartão que não muda nada não é escolha.
  */
 export const PROPORCAO_APORTE: Record<Ritmo, Record<Degrau, number>> = {
   leve: { 0: 0.45, 1: 0.5, 2: 0.35, 3: 0.25, 4: 0.15 },
   equilibrado: { 0: 0.6, 1: 0.7, 2: 0.5, 3: 0.4, 4: 0.3 },
-  acelerado: { 0: 0.75, 1: 0.7, 2: 0.65, 3: 0.55, 4: 0.45 },
+  acelerado: { 0: 0.8, 1: 0.85, 2: 0.7, 3: 0.6, 4: 0.5 },
 };
 
 export const RITMO_PADRAO: Ritmo = "equilibrado";

@@ -89,6 +89,12 @@ export interface Perfil {
   competenciaTabela?: string;
   /** ausente = "equilibrado" */
   ritmo?: Ritmo;
+  /**
+   * Quanto a pessoa decidiu guardar por mês, no lugar do que o ritmo sugere —
+   * é o que acontece quando ela edita o grupo "Guardar". Fica no perfil (e não
+   * só na tela) porque muda o plano inteiro: precisa viajar com ele.
+   */
+  aporteEscolhido?: number;
   meta?: Meta;
   tipoRenda: TipoRenda;
   idade: number;

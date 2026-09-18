@@ -127,6 +127,9 @@ model Profile {
   competenciaTabela String?         @map("competencia_tabela")
   /// quanto do que sobra vira aporte; nulo = equilibrado
   ritmo             Ritmo?
+  /// valor que a pessoa decidiu guardar por mês, no lugar do que o ritmo sugere
+  /// — é ela editando o grupo "Guardar". Nulo = vale o ritmo.
+  aporteEscolhido   Decimal?        @map("aporte_escolhido") @db.Decimal(12, 2)
 
   // ── Meta principal ──────────────────────────────────────────────────────
   // Uma só, escolhida no questionário. Fica em colunas do perfil (e não numa

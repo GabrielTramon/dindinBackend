@@ -136,10 +136,10 @@ describe("gerarPlano — cascata", () => {
 
 describe("gerarPlano — ritmo", () => {
   it("muda o tamanho do passo, não a ordem da cascata", () => {
-    // excedente 1600 no degrau 0: 45%, 60% e 75%
+    // excedente 1600 no degrau 0: 45%, 60% e 80%
     const porRitmo = RITMOS.map((ritmo) => gerarPlano({ ...base, ritmo }));
-    expect(porRitmo.map((p) => p.aporte)).toEqual([720, 960, 1200]);
-    expect(porRitmo.map((p) => p.livre)).toEqual([880, 640, 400]);
+    expect(porRitmo.map((p) => p.aporte)).toEqual([720, 960, 1280]);
+    expect(porRitmo.map((p) => p.livre)).toEqual([880, 640, 320]);
     for (const p of porRitmo) {
       expect(p.degrau).toBe(0);
       expect(p.alocacoes[0].destino).toBe("folego");
