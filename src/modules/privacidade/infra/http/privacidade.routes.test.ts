@@ -105,6 +105,9 @@ describe('GET /api/v1/me/exportar', () => {
     expect(res.body.conta.email).toBe(ANA.email);
     expect(res.text).not.toContain(BRUNO.email);
     expect(res.text).not.toContain(bruno.subscriberId);
+    // a conta de teste tem senha: nem o hash nem o formato dele aparecem no arquivo
+    expect(res.text).not.toContain('hash-da-senha');
+    expect(res.text).not.toContain('scrypt$');
     const chaves = chavesDoJson(res.body);
     expect(CAMPOS_INTERNOS.filter((campo) => chaves.has(campo))).toEqual([]);
   });
@@ -205,7 +208,7 @@ describe('DELETE /api/v1/me', () => {
 
   it('ligado como o main liga (sessão lida em subscribers.findById), a exclusão encerra a sessão sozinha', async () => {
     const auth = createAuthMiddlewares(kit.authTokens, {
-      exists: async (id) => (await r.subscribers.findById(id)) !== null,
+      sessionVersion: async (id) => (await r.subscribers.findById(id))?.versaoSessao ?? null,
     });
     const comoNoMain = kit.app((api) => api.use(createPrivacidadeModule({ ...kit.deps, ...r, auth }).router));
     const ana = await criarContaCompleta(r, ANA);

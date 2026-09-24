@@ -204,6 +204,178 @@ export function describeSubscribersRepositoryContract(nome: string, setup: () =>
       expect(await h.repo.findById(s.id)).toBeNull();
     });
 
+    // ── senha ────────────────────────────────────────────────────────────────
+
+    /** conta nova já com senha, como o cadastro grava */
+    const comSenha = (id = novoId(), senhaHash = `senha-de-${id}`) =>
+      Subscriber.criar({
+        id,
+        email: `${id}@teste.dindin.dev`,
+        tokenHash: `hash-${id}`,
+        tokenExpiraEm: emQuinzeMin,
+        senhaHash,
+        agora,
+      });
+
+    it('o hash da senha vai e volta pelas três buscas; conta sem senha volta com null', async () => {
+      const [a, b] = [comSenha(), novo()];
+      await h.repo.save(a);
+      await h.repo.save(b);
+
+      expect((await h.repo.findById(a.id))?.toSnapshot()).toEqual(a.toSnapshot());
+      expect((await h.repo.findByEmail(a.email))?.senhaHash).toBe(`senha-de-${a.id}`);
+      expect((await h.repo.findByTokenHash(a.tokenHash))?.temSenha).toBe(true);
+      expect((await h.repo.findById(b.id))?.senhaHash).toBeNull();
+    });
+
+    it('save de uma linha existente não mexe na senha: uma entidade lida antes não desfaz a troca', async () => {
+      const s = comSenha();
+      await h.repo.save(s);
+      const lidaAntes = await h.repo.findById(s.id);
+
+      const trocada = await h.repo.findById(s.id);
+      trocada?.definirSenha('senha-trocada', depois);
+      expect(await h.repo.savePassword(trocada!)).toBe(true);
+
+      // o descadastro (ou um link novo) grava a linha que leu antes da troca
+      lidaAntes?.descadastrar(depois);
+      await h.repo.save(lidaAntes!);
+      const lido = await h.repo.findById(s.id);
+      expect(lido?.ativo).toBe(false);
+      expect(lido?.senhaHash).toBe('senha-trocada');
+      // e não devolve a validade às sessões que a troca encerrou
+      expect(lido?.versaoSessao).toBe(1);
+    });
+
+    it('savePassword grava só a senha e atualizadoEm: link pendente e descadastro continuam', async () => {
+      const s = comSenha();
+      await h.repo.save(s);
+      const daTroca = await h.repo.findById(s.id);
+
+      const doPedido = await h.repo.findById(s.id);
+      doPedido?.emitirLinkMagico('hash-novo', new Date('2026-09-17T12:20:00.000Z'), depois);
+      doPedido?.descadastrar(depois);
+      await h.repo.save(doPedido!);
+
+      const quando = new Date('2026-09-17T12:07:00.000Z');
+      daTroca?.definirSenha('senha-nova', quando);
+      expect(await h.repo.savePassword(daTroca!)).toBe(true);
+
+      const lido = await h.repo.findById(s.id);
+      expect(lido?.senhaHash).toBe('senha-nova');
+      expect(lido?.versaoSessao).toBe(1);
+      expect(lido?.atualizadoEm).toEqual(quando);
+      expect(lido?.tokenHash).toBe('hash-novo');
+      expect(lido?.ativo).toBe(false);
+    });
+
+    it('savePassword cria a primeira senha da conta antiga, e de quem não existe devolve false', async () => {
+      const antiga = novo();
+      await h.repo.save(antiga);
+      antiga.definirSenha('primeira-senha', depois);
+      expect(await h.repo.savePassword(antiga)).toBe(true);
+      expect((await h.repo.findById(antiga.id))?.senhaHash).toBe('primeira-senha');
+
+      const fantasma = novo();
+      fantasma.definirSenha('x', depois);
+      expect(await h.repo.savePassword(fantasma)).toBe(false);
+      expect(await h.repo.findById(fantasma.id)).toBeNull();
+    });
+
+    it('savePasswordReset grava o consumo e a senha juntos', async () => {
+      const s = comSenha();
+      await h.repo.save(s);
+      const hash = s.tokenHash;
+      s.consumirLinkMagico(depois);
+      s.definirSenha('senha-redefinida', depois);
+
+      expect(await h.repo.savePasswordReset(s, hash)).toBe(true);
+      expect(await h.repo.findByTokenHash(hash)).toBeNull();
+      const lido = await h.repo.findById(s.id);
+      expect(lido?.toSnapshot()).toEqual(s.toSnapshot());
+      expect(lido?.senhaHash).toBe('senha-redefinida');
+      expect(lido?.versaoSessao).toBe(1);
+      expect(lido?.emailVerificadoEm).toEqual(depois);
+      expect(lido?.tokenHash).toBe(`${PREFIXO_TOKEN_CONSUMIDO}${s.id}`);
+    });
+
+    it('dois usos do mesmo link de senha nova: só o primeiro grava, e a senha é a dele', async () => {
+      const s = comSenha();
+      await h.repo.save(s);
+      const hash = s.tokenHash;
+      const primeiro = await h.repo.findByTokenHash(hash);
+      const segundo = await h.repo.findByTokenHash(hash);
+      primeiro?.consumirLinkMagico(depois);
+      primeiro?.definirSenha('senha-do-primeiro', depois);
+      segundo?.consumirLinkMagico(depois);
+      segundo?.definirSenha('senha-do-segundo', depois);
+
+      expect(await h.repo.savePasswordReset(primeiro!, hash)).toBe(true);
+      expect(await h.repo.savePasswordReset(segundo!, hash)).toBe(false);
+      expect((await h.repo.findById(s.id))?.senhaHash).toBe('senha-do-primeiro');
+    });
+
+    it('savePasswordReset com o link trocado no meio falha e não muda a senha; o descadastro no meio fica', async () => {
+      const s = comSenha();
+      await h.repo.save(s);
+      const hashAntigo = s.tokenHash;
+      const doReset = await h.repo.findByTokenHash(hashAntigo);
+
+      const doDescadastro = await h.repo.findById(s.id);
+      doDescadastro?.descadastrar(depois);
+      await h.repo.save(doDescadastro!);
+      doReset?.consumirLinkMagico(depois);
+      doReset?.definirSenha('senha-nova', depois);
+      expect(await h.repo.savePasswordReset(doReset!, hashAntigo)).toBe(true);
+      expect((await h.repo.findById(s.id))?.ativo).toBe(false);
+
+      const outro = comSenha();
+      await h.repo.save(outro);
+      const doResetVelho = await h.repo.findByTokenHash(outro.tokenHash);
+      const doPedido = await h.repo.findById(outro.id);
+      doPedido?.emitirLinkMagico('hash-mais-novo', new Date('2026-09-17T12:20:00.000Z'), depois);
+      await h.repo.save(doPedido!);
+      doResetVelho?.consumirLinkMagico(depois);
+      doResetVelho?.definirSenha('nao-pode-gravar', depois);
+      expect(await h.repo.savePasswordReset(doResetVelho!, outro.tokenHash)).toBe(false);
+      const lido = await h.repo.findById(outro.id);
+      expect(lido?.senhaHash).toBe(`senha-de-${outro.id}`);
+      expect(lido?.versaoSessao).toBe(0);
+      expect(lido?.tokenHash).toBe('hash-mais-novo');
+    });
+
+    it('saveMagicLinkConsumption (confirmar o e-mail) não mexe na senha trocada no meio', async () => {
+      const s = comSenha();
+      await h.repo.save(s);
+      const hash = s.tokenHash;
+      const daConfirmacao = await h.repo.findByTokenHash(hash);
+
+      const daTroca = await h.repo.findById(s.id);
+      daTroca?.definirSenha('senha-trocada', depois);
+      await h.repo.savePassword(daTroca!);
+
+      daConfirmacao?.consumirLinkMagico(depois);
+      expect(await h.repo.saveMagicLinkConsumption(daConfirmacao!, hash)).toBe(true);
+      const lido = await h.repo.findById(s.id);
+      expect(lido?.senhaHash).toBe('senha-trocada');
+      expect(lido?.versaoSessao).toBe(1);
+      expect(lido?.emailVerificadoEm).toEqual(depois);
+    });
+
+    it('a versão das sessões vai e volta pelas buscas: nasce 0 e sobe com cada senha gravada', async () => {
+      const s = comSenha();
+      await h.repo.save(s);
+      expect((await h.repo.findById(s.id))?.versaoSessao).toBe(0);
+      for (const esperada of [1, 2]) {
+        const lida = await h.repo.findById(s.id);
+        lida?.definirSenha(`senha-${esperada}`, depois);
+        expect(await h.repo.savePassword(lida!)).toBe(true);
+        expect((await h.repo.findByEmail(s.email))?.versaoSessao).toBe(esperada);
+      }
+    });
+
+    // ── exclusão e e-mail mensal ─────────────────────────────────────────────
+
     it('delete remove só aquela pessoa e é idempotente', async () => {
       const [a, b] = [novo(), novo()];
       await h.repo.save(a);

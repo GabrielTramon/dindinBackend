@@ -52,7 +52,12 @@ export const metaSchema = z
     path: ["nome"],
   });
 
-export const dividaSchema = z.object({
+/*
+  Os campos da dívida, sem a trava parcela × saldo. É o que o PERFIL SALVO usa:
+  um plano gravado antes da trava existir, com a parcela maior que o saldo, não
+  pode sumir da tela no F5 — o motor já limita a parcela ao saldo na conta.
+*/
+const dividaCamposSchema = z.object({
   tipo: z.enum(TIPOS_DIVIDA, { error: "Escolha o tipo da dívida" }),
   saldo: z
     .number({ error: "Informe quanto você deve" })
@@ -69,6 +74,35 @@ export const dividaSchema = z.object({
     .max(20, { error: "Taxa acima de 2.000% ao ano? Confere o valor" })
     .optional(),
 });
+
+/**
+ * A dívida como a pessoa DIGITA (onboarding, API): os campos + a trava da
+ * parcela. Não é o que valida o perfil salvo — ver dividaCamposSchema.
+ */
+export const dividaSchema = z
+  .object({
+    tipo: z.enum(TIPOS_DIVIDA, { error: "Escolha o tipo da dívida" }),
+    saldo: z
+      .number({ error: "Informe quanto você deve" })
+      .positive({ error: "O saldo precisa ser maior que zero" })
+      .max(10_000_000, { error: "Confere esse valor? Está muito alto" }),
+    parcela: z
+      .number({ error: "Informe a parcela" })
+      .nonnegative({ error: "A parcela não pode ser negativa" })
+      .max(1_000_000, { error: "Confere esse valor? Está muito alto" })
+      .optional(),
+    taxaAnual: z
+      .number()
+      .min(0, { error: "A taxa não pode ser negativa" })
+      .max(20, { error: "Taxa acima de 2.000% ao ano? Confere o valor" })
+      .optional(),
+  })
+  // quase sempre é número trocado entre os dois campos; sem isso o plano
+  // desconta todo mês uma parcela maior do que a dívida inteira
+  .refine((d) => d.parcela === undefined || d.parcela <= d.saldo, {
+    error: "A parcela está maior que o total da dívida. Confere os dois valores?",
+    path: ["parcela"],
+  });
 
 export const gastoFixoSchema = z
   .object({
@@ -135,7 +169,8 @@ export const perfilSchema = z.object({
   gastosFixos: z
     .array(gastoFixoSchema)
     .max(MAX_GASTOS_FIXOS, { error: `No máximo ${MAX_GASTOS_FIXOS} gastos fixos` }),
-  dividas: z.array(dividaSchema).max(MAX_DIVIDAS, { error: `No máximo ${MAX_DIVIDAS} dívidas` }),
+  // sem a trava parcela × saldo: ela mora no dividaSchema, que o onboarding usa linha a linha
+  dividas: z.array(dividaCamposSchema).max(MAX_DIVIDAS, { error: `No máximo ${MAX_DIVIDAS} dívidas` }),
   guardado: z
     .number({ error: "Informe quanto você tem guardado (pode ser 0)" })
     .nonnegative({ error: "Não pode ser negativo" })

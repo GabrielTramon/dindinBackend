@@ -10,7 +10,8 @@ import type { PerfilDoMotor, PlanoDoMotor } from '../../planos';
   - ids: são chaves do banco e não dizem nada pra pessoa. O gasto aponta pra
     categoria pelo nome, e o plano e o check-in já se identificam pela versão e
     pela competência;
-  - hash e validade do link mágico: segredo de autenticação, não dado útil;
+  - hash da senha (nem se ela existe) e hash e validade do link do e-mail:
+    segredo de autenticação, não dado útil;
   - qualquer coisa de outra pessoa. O catálogo de categorias é de todo mundo e
     só aparece como o nome da categoria de um gasto.
 

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { commonSchemas } from '../../../../shared/infra/http/validation';
+import { travaDaParcela } from '../../../../shared/infra/http/trava-da-parcela';
 import { metaSchema, MORADIAS, perfilSchema, RENDAS_INFORMADAS, RITMOS, TIPOS_RENDA } from '../../../../shared/motor/schema';
 
 /*
@@ -65,5 +66,5 @@ export const atualizarPerfilBody = z
     error: 'Informe pelo menos um campo pra alterar',
   });
 
-/** O perfil completo é validado com o schema do motor: o mesmo que o onboarding do frontend usa. */
-export const perfilCompletoBody = perfilSchema;
+/** O perfil completo é validado com o schema do motor (o mesmo do onboarding do frontend) + a trava da parcela. */
+export const perfilCompletoBody = perfilSchema.superRefine(travaDaParcela);

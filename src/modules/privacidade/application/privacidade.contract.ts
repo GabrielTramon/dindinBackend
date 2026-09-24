@@ -140,6 +140,8 @@ export async function criarContaCompleta(r: RepositoriosDaConta, pessoa: PessoaD
     email: pessoa.email,
     tokenHash: `hash-do-link-${pessoa.apelido}`,
     tokenExpiraEm: em('linkExpira'),
+    // a conta tem senha: a exportação nunca pode levar o hash dela
+    senhaHash: `scrypt$16384$8$1$hash-da-senha-${pessoa.apelido}`,
     agora: em('cadastro'),
   });
   conta.consumirLinkMagico(em('confirmacao'));
@@ -405,7 +407,18 @@ export function chavesDoJson(valor: unknown): Set<string> {
 }
 
 /** Nomes de campo que nunca podem sair num arquivo de exportação. */
-export const CAMPOS_INTERNOS = ['id', 'subscriberId', 'profileId', 'categoriaId', 'tokenHash', 'token', 'tokenExpiraEm'];
+export const CAMPOS_INTERNOS = [
+  'id',
+  'subscriberId',
+  'profileId',
+  'categoriaId',
+  'tokenHash',
+  'token',
+  'tokenExpiraEm',
+  'senha',
+  'senhaHash',
+  'temSenha',
+];
 
 export function describePrivacidadeContract(nome: string, setup: () => Promise<PrivacidadeHarness>) {
   describe(`Privacidade — ${nome}`, () => {
@@ -424,7 +437,7 @@ export function describePrivacidadeContract(nome: string, setup: () => Promise<P
         expect(dados).toEqual(exportacaoEsperada(ANA, h.clock.now()));
       });
 
-      it('nada de outra pessoa, nenhum id interno e nenhum hash de token', async () => {
+      it('nada de outra pessoa, nenhum id interno, nenhum hash de token e nada da senha', async () => {
         const ana = await criarContaCompleta(h, ANA);
         const bruno = await criarContaCompleta(h, BRUNO);
 
@@ -437,6 +450,8 @@ export function describePrivacidadeContract(nome: string, setup: () => Promise<P
           ana.subscriberId,
           ana.categoriaComGastoId,
           'hash-do-link',
+          'hash-da-senha',
+          'scrypt$',
           'consumido:',
         ]) {
           expect(texto).not.toContain(proibido);

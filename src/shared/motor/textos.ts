@@ -4,14 +4,17 @@
 */
 
 import { formatBRL, formatMeses, formatPct } from "./format";
-import { MARGEM_MINIMA_CORTE, MESES_SIMULACAO_MAX } from "./config";
+import { LIMIAR_MORADIA_PESADA, MARGEM_MINIMA_CORTE, MESES_SIMULACAO_MAX } from "./config";
+import { rotuloMeta } from "./metas-catalogo";
 import type {
   Degrau,
   DiagnosticoDividaCara,
   DividaAvaliada,
   Folego,
   GastoFixoDetalhado,
+  Meta,
   Perfil,
+  Plano,
   PlanoDeCorte,
   QuadroDividas,
   Reserva,
@@ -33,6 +36,50 @@ export const NOME_DIVIDA: Record<TipoDivida, string> = {
   financiamento: "o financiamento",
   outra: "essa dívida",
 };
+
+/*
+  NOME_DIVIDA já vem com artigo ("o empréstimo", "essa dívida") porque as telas
+  usam assim. No meio da frase o artigo contrai com a preposição e o pronome
+  concorda com o gênero — "pra o rotativo" e "essa dívida... a taxa dele" eram
+  erros de concordância. Estes helpers fazem a contração num lugar só.
+*/
+const DIVIDA_FEMININA: Record<TipoDivida, boolean> = {
+  rotativo: false,
+  cheque_especial: false,
+  emprestimo: false,
+  financiamento: false,
+  outra: true,
+};
+
+/** "pro empréstimo", "pra essa dívida" */
+function praDivida(tipo: TipoDivida): string {
+  const nome = NOME_DIVIDA[tipo];
+  if (nome.startsWith("o ")) return `pro ${nome.slice(2)}`;
+  if (nome.startsWith("a ")) return `pra ${nome.slice(2)}`;
+  return `pra ${nome}`;
+}
+
+/** "do empréstimo", "dessa dívida" */
+function daDivida(tipo: TipoDivida): string {
+  const nome = NOME_DIVIDA[tipo];
+  if (nome.startsWith("o ")) return `do ${nome.slice(2)}`;
+  if (nome.startsWith("a ")) return `da ${nome.slice(2)}`;
+  return `d${nome}`;
+}
+
+/** "ele"/"ela" conforme a dívida */
+const pronome = (tipo: TipoDivida) => (DIVIDA_FEMININA[tipo] ? "ela" : "ele");
+
+/** Uma dívida pelo nome, várias pelo plural genérico — com o verbo concordando. */
+function sujeitoDas(lista: DividaAvaliada[], plural: string) {
+  const uma = lista.length === 1;
+  return {
+    uma,
+    sujeito: uma ? NOME_DIVIDA[lista[0].tipo] : plural,
+    /** conjuga: verbo("zera", "zeram") */
+    verbo: (singular: string, pluralVerbo: string) => (uma ? singular : pluralVerbo),
+  };
+}
 
 export const ROTULO_DIVIDA: Record<TipoDivida, string> = {
   rotativo: "Rotativo do cartão",
@@ -68,6 +115,8 @@ interface Contexto {
   diagnosticoCaras: DiagnosticoDividaCara | null;
   corte: PlanoDeCorte | null;
   aporte: number;
+  /** o aporte é o valor que a pessoa digitou no "Guardar", não o do ritmo */
+  aporteEditado?: boolean;
   livre: number;
 }
 
@@ -109,7 +158,7 @@ function decisao(c: Contexto): { titulo: string; texto: string } {
       const d = c.dividas.medias[0];
       return {
         titulo: `Seu próximo passo é antecipar ${NOME_DIVIDA[d.tipo]}.`,
-        texto: `A taxa dele (${formatPct(d.taxaAnual)} ao ano) é maior do que o dinheiro rende parado. Com a reserva completa, cada parcela antecipada é ganho garantido.`,
+        texto: `A taxa d${pronome(d.tipo)} (${formatPct(d.taxaAnual)} ao ano) é maior do que o dinheiro rende parado. Com a reserva completa, cada parcela antecipada é ganho garantido.`,
       };
     }
     case 4:
@@ -134,21 +183,80 @@ function decisao(c: Contexto): { titulo: string; texto: string } {
 function semPrazoCaras(c: Contexto): string {
   const d = c.diagnosticoCaras;
   const horizonte = d?.motivo === "horizonte";
-  const uma = c.dividas.caras.length === 1;
-  const sujeito = uma ? NOME_DIVIDA[c.dividas.caras[0].tipo] : "as dívidas caras";
+  const caras = c.dividas.caras;
+  const { uma, sujeito, verbo } = sujeitoDas(caras, "as dívidas caras");
   const prazoMaximo = formatMeses(MESES_SIMULACAO_MAX);
+  const causa = horizonte
+    ? `${sujeito} ${verbo("levaria", "levariam")} mais de ${prazoMaximo} pra zerar`
+    : "os juros crescem mais rápido do que você paga";
+  // com o "Guardar" editado, "neste ritmo" não descreve o que a pessoa faz:
+  // o que ela faz é guardar um valor — ou nada
+  const hoje = !c.aporteEditado
+    ? "Neste ritmo"
+    : c.aporte > 0
+      ? `Guardando ${formatBRL(c.aporte)} por mês`
+      : "Só com as parcelas";
 
   if (d?.ritmoQueResolve && d.mesesNoRitmoQueResolve !== null) {
-    const causa = horizonte
-      ? `${sujeito} ${uma ? "levaria" : "levariam"} mais de ${prazoMaximo} pra zerar`
-      : "os juros crescem mais rápido do que você paga";
-    return `Neste ritmo, ${causa}. No ritmo ${ROTULO_RITMO[d.ritmoQueResolve]} — que guarda uma fatia maior do que sobra — ${sujeito} ${uma ? "zera" : "zeram"} em ${formatMeses(d.mesesNoRitmoQueResolve)}.`;
+    const comparacao = !c.aporteEditado
+      ? "que guarda uma fatia maior do que sobra"
+      : c.aporte > 0
+        ? `que guarda mais do que os ${formatBRL(c.aporte)} de hoje`
+        : "que separa uma parte do que sobra";
+    return `${hoje}, ${causa}. No ritmo ${ROTULO_RITMO[d.ritmoQueResolve]} — ${comparacao} — ${sujeito} ${verbo("zera", "zeram")} em ${formatMeses(d.mesesNoRitmoQueResolve)}.`;
   }
 
-  const causa = horizonte
-    ? `as dívidas caras levariam mais de ${prazoMaximo} pra zerar`
-    : "os juros das dívidas caras crescem mais rápido do que você paga";
-  return `Atenção: com o aporte de hoje, ${causa}. Renegociar ou trocar por uma linha mais barata não é opcional — é o único caminho.`;
+  // nenhum ritmo resolve, mas o "Guardar" em 100% (à mão) resolve: "único
+  // caminho" seria mentira — renegociar ajuda, não é a única saída
+  if (d?.guardandoTudo) {
+    const { valor, meses } = d.guardandoTudo;
+    return `${hoje}, ${causa}. Guardando tudo o que sobra (${formatBRL(valor)}), ${sujeito} ${verbo("zera", "zeram")} em ${formatMeses(meses)}; renegociar ou trocar por uma linha mais barata ainda ajuda a sair antes.`;
+  }
+
+  const causaSemSaida = horizonte
+    ? causa
+    : `os juros ${uma ? daDivida(caras[0].tipo) : "das dívidas caras"} crescem mais rápido do que você paga`;
+  return `Atenção: com o que sobra hoje, ${causaSemSaida}. Renegociar ou trocar por uma linha mais barata não é opcional — é o único caminho.`;
+}
+
+/**
+ * O mesmo aviso de dívida cara sem prazo, a partir de um Plano pronto — é o
+ * que o cartão-resposta mostra, então ele e os próximos passos nunca dizem
+ * coisas diferentes. "Editado" é o perfil ter um "Guardar" escolhido à mão,
+ * a mesma regra que o motor usa quando não recebe opções.
+ */
+export function semPrazoCarasDoPlano(plano: Plano): string {
+  const escolhido = plano.perfil.aporteEscolhido;
+  return semPrazoCaras({
+    ...plano,
+    aporteEditado: escolhido !== undefined && Number.isFinite(escolhido),
+  });
+}
+
+/**
+ * Menos de R$ 1 livre é resíduo de centavos, não dinheiro pra usar: com a
+ * sobra em 1.000,55 e o Guardar em 100%, o aporte fica em 1.000 inteiros e
+ * sobram 0,55 — que a tela escreveria "R$ 1". O cartão e o divisor tratam igual.
+ */
+export const LIVRE_MINIMO = 1;
+
+/**
+ * O primeiro passo: quanto separar. Não diz QUANTO fica livre — os potes da
+ * pessoa mudam esse número e o motor não os conhece (o cartão, que conhece,
+ * é quem diz o valor). Com nada livre ("Guardar" em 100%) não diz "R$ 0 é seu".
+ */
+function primeiroPasso(c: Contexto): string {
+  if (c.aporte > 0) {
+    return c.livre >= LIVRE_MINIMO
+      ? `Separe ${formatBRL(c.aporte)} no dia que a renda cair, antes de gastar. O que fica é seu pra usar sem culpa.`
+      : `Separe ${formatBRL(c.aporte)} no dia que a renda cair, antes de gastar: este mês tudo o que sobra vai pro plano.`;
+  }
+  // "Separe R$ 0" é instrução vazia: com nada guardado, o passo diz isso — e,
+  // como no ramo de cima, sem o valor: os potes da pessoa podem levar parte (ou
+  // tudo) do que sobra, e "os R$ 1.500 são seus" contradiria o cartão
+  return c.livre >= LIVRE_MINIMO
+    ? "Este mês o plano não separa nada: o que sobra é seu pra usar sem culpa."
+    : "Este mês o plano não separa nada.";
 }
 
 function proximosPassos(c: Contexto): string[] {
@@ -161,9 +269,7 @@ function proximosPassos(c: Contexto): string[] {
     return passos;
   }
 
-  passos.push(
-    `Separe ${formatBRL(c.aporte)} no dia que a renda cair, antes de gastar. O que fica — ${formatBRL(c.livre)} — é seu pra usar sem culpa.`,
-  );
+  passos.push(primeiroPasso(c));
 
   if (!c.folego.ok) {
     passos.push(`Deixe o fôlego numa conta separada, com liquidez diária. Não é investimento: é pra não precisar do cartão.`);
@@ -174,7 +280,14 @@ function proximosPassos(c: Contexto): string[] {
     if (m === null) {
       passos.push(semPrazoCaras(c));
     } else {
-      passos.push(`Mantendo esse ritmo, as dívidas caras zeram em ${formatMeses(m)}. Cada mês a menos economiza ${formatBRL(c.dividas.jurosMensaisCaras)} de juros.`);
+      const { sujeito, verbo } = sujeitoDas(c.dividas.caras, "as dívidas caras");
+      const juros = formatBRL(c.dividas.jurosMensaisCaras);
+      passos.push(
+        c.aporte > 0
+          ? `Mantendo esse ritmo, ${sujeito} ${verbo("zera", "zeram")} em ${formatMeses(m)}. Cada mês a menos economiza ${juros} de juros.`
+          : // nada guardado: quem quita são só as parcelas, e é isso que o texto diz
+            `Só com as parcelas, ${sujeito} ${verbo("zera", "zeram")} em ${formatMeses(m)}. Guardar qualquer valor por mês encurta esse prazo — cada mês a menos economiza ${juros} de juros.`,
+      );
     }
     if (c.dividas.caras.length > 1) {
       passos.push("Pague a de maior taxa primeiro e só o mínimo nas outras. Quando ela zerar, a parcela dela reforça a próxima.");
@@ -183,20 +296,35 @@ function proximosPassos(c: Contexto): string[] {
 
   if (c.folego.ok && c.dividas.caras.length === 0 && !c.reserva.ok) {
     const m = c.reserva.mesesParaCompletar;
+    // aqui não há nada acima da reserva (fôlego ok, sem dívida cara): sem
+    // prazo, o único motivo é não estar guardando nada
     passos.push(
       m === null
-        ? `A reserva de ${formatBRL(c.reserva.alvo)} entra assim que as prioridades de cima estiverem resolvidas.`
+        ? `Com nada sendo guardado por mês, a reserva de ${formatBRL(c.reserva.alvo)} não avança. Qualquer valor já começa a encher.`
         : `Nesse ritmo, a reserva de ${formatBRL(c.reserva.alvo)} fica completa em ${formatMeses(m)}.`,
     );
   }
 
   if (c.degrau === 3 && c.dividas.mesesParaQuitarMedias !== null) {
-    passos.push(`Antecipando ${formatBRL(c.aporte)} por mês, ${NOME_DIVIDA[c.dividas.medias[0].tipo]} termina em ${formatMeses(c.dividas.mesesParaQuitarMedias)}.`);
+    // o prazo é o de TODAS as médias: com mais de uma, o nome da primeira mentiria
+    const { sujeito, verbo } = sujeitoDas(c.dividas.medias, "as dívidas médias");
+    const prazo = formatMeses(c.dividas.mesesParaQuitarMedias);
+    passos.push(
+      c.aporte > 0
+        ? `Antecipando ${formatBRL(c.aporte)} por mês, ${sujeito} ${verbo("termina", "terminam")} em ${prazo}.`
+        : // nada antecipado: quem quita são só as parcelas
+          `Só com as parcelas, ${sujeito} ${verbo("termina", "terminam")} em ${prazo}.`,
+    );
   }
 
-  if (c.degrau === 4) {
+  // com nada separado não há o que "guardar num lugar separado": o primeiro
+  // passo já disse que o plano não separa nada este mês
+  if (c.degrau === 4 && c.aporte > 0) {
+    const meta = c.perfil.meta;
     passos.push(
-      `Guarde os ${formatBRL(c.aporte)} num lugar só pra um objetivo seu e dê um nome pra ele. Em breve o dindin calcula quanto por mês e a data de chegada.`,
+      meta
+        ? `Guarde os ${formatBRL(c.aporte)} num lugar separado, só pra sua meta: ${rotuloMeta(meta)}. Em "Sua meta" você vê quanto tempo falta pra chegar lá.`
+        : `Guarde os ${formatBRL(c.aporte)} num lugar só pra um objetivo seu. Dê um nome e um valor pra ele na pergunta da meta e o dindin mostra quando você chega lá.`,
     );
   }
 
@@ -213,8 +341,8 @@ const alocacao = {
     titulo: caras.length === 1 ? ROTULO_DIVIDA[caras[0].tipo] : "Dívidas caras",
     descricao:
       caras.length === 1
-        ? `Vai inteiro pra ${NOME_DIVIDA[caras[0].tipo]}, que cobra ${formatPct(caras[0].taxaAnual)} ao ano.`
-        : `Vai pra ${NOME_DIVIDA[caras[0].tipo]} primeiro — a de maior taxa. As outras recebem só o mínimo até essa zerar.`,
+        ? `Vai inteiro ${praDivida(caras[0].tipo)}, que cobra ${formatPct(caras[0].taxaAnual)} ao ano.`
+        : `Vai ${praDivida(caras[0].tipo)} primeiro — a de maior taxa. As outras recebem só o mínimo até essa zerar.`,
   }),
   reserva: (r: Reserva) => ({
     titulo: "Reserva de emergência",
@@ -224,17 +352,22 @@ const alocacao = {
     titulo: medias.length === 1 ? ROTULO_DIVIDA[medias[0].tipo] : "Dívidas médias",
     descricao: `Antecipa ${NOME_DIVIDA[medias[0].tipo]}: a taxa (${formatPct(medias[0].taxaAnual)} ao ano) é maior do que o dinheiro rende guardado.`,
   }),
-  metas: () => ({
+  metas: (meta?: Meta) => ({
     titulo: "Metas",
-    descricao: "Livre pra um objetivo seu. Em breve: nome, valor e data, com a conta feita pelo dindin.",
+    descricao: meta
+      ? `Vai pra sua meta: ${rotuloMeta(meta)}.`
+      : "Livre pra um objetivo seu. Com uma meta definida, o dindin mostra quando você chega lá.",
   }),
 };
 
 const corte = {
   renegociar: (d: DividaAvaliada) =>
-    `Renegociar ${NOME_DIVIDA[d.tipo]}: a ${formatPct(d.taxaAnual)} ao ano, ele sozinho custa ${formatBRL(d.jurosMensais)} por mês de juros. Trocar por uma linha mais barata é o corte mais rápido que existe.`,
-  moradiaPesada: (custo: number, renda: number) =>
-    `Moradia leva ${formatPct(custo / renda)} da sua renda — acima de 30% é o maior peso do orçamento. Vale olhar dividir, negociar ou mudar.`,
+    `Renegociar ${NOME_DIVIDA[d.tipo]}: a ${formatPct(d.taxaAnual)} ao ano, ${pronome(d.tipo)} ${DIVIDA_FEMININA[d.tipo] ? "sozinha" : "sozinho"} custa ${formatBRL(d.jurosMensais)} por mês de juros. Trocar por uma linha mais barata é o corte mais rápido que existe.`,
+  /** "o maior peso" só quando é verdade: um gasto fixo pode pesar mais que a moradia */
+  moradiaPesada: (custo: number, renda: number, maiorGasto: number) =>
+    custo >= maiorGasto
+      ? `Moradia leva ${formatPct(custo / renda)} da sua renda: passa dos ${formatPct(LIMIAR_MORADIA_PESADA)} e é o maior peso do orçamento. Vale olhar dividir, negociar ou mudar.`
+      : `Moradia leva ${formatPct(custo / renda)} da sua renda: passa dos ${formatPct(LIMIAR_MORADIA_PESADA)}. Vale olhar dividir, negociar ou mudar.`,
   assinaturas: () =>
     "Liste tudo que sai automático (assinaturas, apps, planos) e cancele o que não usou nos últimos 30 dias.",
   maioresGastos: (maiores: GastoFixoDetalhado[]) => {
@@ -253,4 +386,47 @@ const corte = {
     `Meta do mês: reduzir ${formatBRL(metaCorte)} nos custos fixos. Isso zera o vermelho e deixa sobrar ${formatPct(MARGEM_MINIMA_CORTE)} da renda (${formatBRL(renda * MARGEM_MINIMA_CORTE)}) pra começar o plano.`,
 };
 
-export const textos = { decisao, proximosPassos, alocacao, corte };
+/** "Investimento, Namoro e Emergência" */
+function listar(nomes: string[]): string {
+  if (nomes.length <= 1) return nomes[0] ?? "";
+  return `${nomes.slice(0, -1).join(", ")} e ${nomes.at(-1)}`;
+}
+
+/**
+ * A meta que não fecha em 50 anos — a MESMA frase no cartão e em "Sua meta".
+ * "Guarde uma fatia maior" só quando existe fatia maior: com o Guardar em 100%
+ * (ou tudo o que sobra já indo pra meta) a única saída honesta é rever o valor.
+ */
+function metaNaoFecha(porMes: number, nome: string | null, cabeMais: boolean): string {
+  const saida = cabeMais ? "Guarde uma fatia maior ou reveja o valor dela." : "Reveja o valor dela.";
+  return `Com ${formatBRL(porMes)} por mês, a meta${nome ? ` ${nome}` : ""} não fecha nem em ${formatMeses(MESES_SIMULACAO_MAX)}. ${saida}`;
+}
+
+/**
+ * A regra de verdade dos ritmos (motor.ts, aportePorDegrau): o piso de 10% da
+ * renda só segura o Acelerado, e nunca abaixo do que o Equilibrado guardaria —
+ * com sobra pequena, o Acelerado deixa menos de 10% livre. À mão não há piso.
+ */
+const sobreOsRitmos = `Nenhum ritmo sugere guardar tudo o que sobra. O Acelerado para antes de deixar menos de ${formatPct(MARGEM_MINIMA_CORTE)} da sua renda livre; quando sobra pouco, ele sugere o mesmo que o Equilibrado. No Guardar, à mão, você pode ir até 100%.`;
+
+/** As frases de "Sua meta" nos detalhes, com a projeção do caminho. */
+const metaDetalhe = {
+  /** o que vem depois de "Chega em 2 anos, por volta de março de 2028" */
+  comoChega: (o: { degrauDeMetas: boolean; aporteMensal: number; inicio: number | null; temPotes: boolean }) => {
+    if (o.degrauDeMetas) return `, com ${formatBRL(o.aporteMensal)} por mês.`;
+    // um passo de antes sem prazo: o plano nunca chega na meta nessa conta
+    if (o.inicio === null) {
+      return ": só com os potes marcados. O que o plano guarda entra quando as prioridades de cima tiverem prazo.";
+    }
+    return o.temPotes
+      ? ": os potes marcados entram desde já e o plano soma quando as prioridades de cima fecharem."
+      : ": o plano começa a juntar pra ela quando as prioridades de cima fecharem.";
+  },
+  /** "Entra nesta conta: Investimento e o que o plano guarda, quando as prioridades de cima fecharem." */
+  entraNaConta: (potes: string[], planoEntra: boolean, planoDepois: boolean) => {
+    const partes = [...potes, ...(planoEntra ? ["o que o plano guarda"] : [])];
+    return `Entra nesta conta: ${listar(partes)}${planoEntra && planoDepois ? ", quando as prioridades de cima fecharem" : ""}.`;
+  },
+};
+
+export const textos = { decisao, proximosPassos, alocacao, corte, metaNaoFecha, sobreOsRitmos, metaDetalhe };

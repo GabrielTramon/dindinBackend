@@ -13,6 +13,8 @@ export function toDomain(row: SubscriberRow): Subscriber {
     email: row.email,
     tokenHash: row.token,
     tokenExpiraEm: row.tokenExpiraEm,
+    senhaHash: row.senhaHash,
+    versaoSessao: row.versaoSessao,
     emailVerificadoEm: row.emailVerificadoEm,
     ativo: row.ativo,
     criadoEm: row.criadoEm,
@@ -27,6 +29,9 @@ export function toPersistence(subscriber: Subscriber) {
     email: s.email,
     token: s.tokenHash,
     tokenExpiraEm: s.tokenExpiraEm,
+    // null grava null: é assim que a coluna fica vazia na conta sem senha
+    senhaHash: s.senhaHash,
+    versaoSessao: s.versaoSessao,
     emailVerificadoEm: s.emailVerificadoEm,
     ativo: s.ativo,
     criadoEm: s.criadoEm,

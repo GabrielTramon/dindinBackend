@@ -335,7 +335,7 @@ const MESES_PT = [
   depende do ICU compilado no Node — no backend, o mesmo cálculo tem que dar a
   mesma frase.
 */
-function mesEmTexto(hoje: Date, meses: number): string | null {
+export function mesEmTexto(hoje: Date, meses: number): string | null {
   if (!(hoje instanceof Date) || Number.isNaN(hoje.getTime())) return null;
   const total = hoje.getMonth() + meses;
   const ano = hoje.getFullYear() + Math.floor(total / 12);

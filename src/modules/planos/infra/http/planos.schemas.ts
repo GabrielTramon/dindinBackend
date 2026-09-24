@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { hasAtMostDecimals } from '../../../../shared/domain/guards';
 import { commonSchemas } from '../../../../shared/infra/http/validation';
 import { perfilSchema } from '../../../../shared/motor/schema';
+import { travaDaParcela } from '../../../../shared/infra/http/trava-da-parcela';
 import { MAX_VERSAO } from '../../domain/versao-plano';
 
 /*
@@ -34,6 +35,8 @@ export const listarVersoesQuery = commonSchemas.pagination;
  * mostraria um plano que a pessoa não consegue salvar depois.
  */
 export const simularBody = perfilSchema.superRefine((perfil, ctx) => {
+  // parcela maior que o saldo: recusada como no onboarding
+  travaDaParcela(perfil, ctx);
   const casas = (valor: number | undefined, path: (string | number)[], maximo = 2) => {
     if (valor !== undefined && !hasAtMostDecimals(valor, maximo)) {
       ctx.addIssue({ code: 'custom', message: `No máximo ${maximo} casas decimais`, path });

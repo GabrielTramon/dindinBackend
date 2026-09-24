@@ -2,7 +2,7 @@
 
 API do **dindin**, planejador financeiro gratuito em pt-BR. O frontend (`../dindinFrontend`) funciona sozinho, com o plano no localStorage; esta API é o que permite **salvar o plano**, **usar em mais de um aparelho**, **acompanhar o mês** (check-in por e-mail) e **exercer a LGPD** (exportar e excluir tudo).
 
-- Sem senha: login por **link mágico** (o token vai no fragmento da URL e o banco guarda só o SHA-256).
+- Conta com **e-mail e senha**, grátis e opcional: o app inteiro funciona sem conta; ela serve pra baixar o PDF do plano, salvar e usar em mais de um aparelho. A senha é guardada só como hash **scrypt**; os links que vão por e-mail ("Confirme seu e-mail", "Criar uma senha nova") levam o token no fragmento da URL e o banco guarda só o SHA-256.
 - O plano é calculado **no servidor**, pelo mesmo motor do frontend, a partir do perfil salvo — o histórico não depende de confiar no cliente.
 - Nunca recomenda produto, banco, corretora ou emissor.
 
@@ -69,7 +69,7 @@ Tudo na RAM, some ao reiniciar. Bom pra desenvolver o frontend e pra demo.
 PERSISTENCIA=memoria JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))") yarn dev
 ```
 
-A API sobe em `http://localhost:3333`. Com `EMAIL_PROVEDOR=console` (padrão), o e-mail do link mágico aparece no terminal — copie o valor depois de `#token=` e faça `POST /api/v1/auth/verificar`.
+A API sobe em `http://localhost:3701`. Crie uma conta com `POST /api/v1/auth/cadastrar` (`{ email, senha }`) — a sessão sai na hora. Com `EMAIL_PROVEDOR=console` (padrão), os e-mails aparecem no terminal: o "Confirme seu e-mail" (`/entrar#token=…` → `POST /api/v1/auth/verificar`) e o "Criar uma senha nova" do Esqueci a senha (`/redefinir-senha#token=…` → `POST /api/v1/auth/redefinir-senha`).
 
 ### Com Postgres
 
@@ -91,18 +91,19 @@ Lidas e validadas uma vez, em `src/main/config.ts`. Modelo comentado em [.env.ex
 | Variável | Padrão | O que é |
 | --- | --- | --- |
 | `NODE_ENV` | `development` | `production` recusa `PERSISTENCIA=memoria`, `EMAIL_PROVEDOR=console`, `CORS_ORIGIN=*`, `APP_URL` http/localhost e `LINK_REENVIO_SEGUNDOS` < 60 |
-| `PORT` | `3333` | porta HTTP |
+| `PORT` | `3701` | porta HTTP |
 | `PERSISTENCIA` | `prisma` | `prisma` (Postgres) ou `memoria` |
 | `DATABASE_URL` | — | obrigatória com `prisma` |
-| `CORS_ORIGIN` | `http://localhost:3000` | origens do frontend, separadas por vírgula |
+| `CORS_ORIGIN` | `http://localhost:3700` | origens do frontend, separadas por vírgula |
 | `TRUST_PROXY` | `0` | saltos de proxy confiáveis (afeta `req.ip` e o rate limit) |
 | `LOG_REQUESTS` | `true` | log de acesso (morgan) com o request id |
-| `RATE_LIMIT` | `true` (`false` com `NODE_ENV=test`) | limite por IP nas rotas públicas de identidade |
+| `RATE_LIMIT` | `true` (`false` com `NODE_ENV=test`) | limite por IP nas rotas de conta (`/auth/*`, `/me/senha`) e no `/descadastrar` |
 | `JWT_SECRET` | — | obrigatória, 32+ caracteres |
 | `SESSAO_DIAS` | `30` | validade da sessão |
-| `LINK_MAGICO_MINUTOS` | `15` | validade do link mágico |
+| `LINK_MAGICO_MINUTOS` | `15` | validade do link "Criar uma senha nova" (o nome ficou do link mágico) |
+| `LINK_CONFIRMACAO_HORAS` | `48` | validade do link "Confirme seu e-mail", mandado no cadastro |
 | `LINK_REENVIO_SEGUNDOS` | `60` | intervalo mínimo entre dois links pro mesmo e-mail |
-| `APP_URL` | `http://localhost:3000` | base dos links dos e-mails (`/entrar#token=`, `/descadastrar#token=`, `/check-in/AAAA-MM`) |
+| `APP_URL` | `http://localhost:3700` | base dos links dos e-mails (`/entrar#token=`, `/redefinir-senha#token=`, `/descadastrar#token=`, `/check-in/AAAA-MM`) |
 | `EMAIL_PROVEDOR` | `console` | `console` (imprime) ou `resend` |
 | `EMAIL_REMETENTE` | `dindin <nao-responda@dindin.app>` | remetente |
 | `RESEND_API_KEY` | — | obrigatória com `resend` |
@@ -124,12 +125,20 @@ Em qualquer rota, além dos status listados: `400 JSON_INVALIDO`, `413` (corpo a
 
 | Método | Caminho | Auth | O que faz | Status |
 | --- | --- | --- | --- | --- |
-| POST | `/auth/link-magico` | pública · 5/IP/15 min | `{ email }` → manda o link. Mesma resposta pra e-mail novo, existente ou em cooldown de 60 s | 202 · 400 · 429 |
-| POST | `/auth/verificar` | pública · 20/IP/15 min | `{ token }` → `{ accessToken, expiresAt, subscriber }`. Uso único; confirma o e-mail | 200 · 400 · 401 · 429 |
-| GET | `/me` | sessão | a conta: `{ id, email, emailVerificadoEm, ativo, criadoEm }` | 200 · 401 · 404 |
+| POST | `/auth/cadastrar` | pública · 10/IP/15 min | `{ email, senha }` → cria a conta e já entra: `{ accessToken, expiresAt, subscriber }` + `Location: /api/v1/me`. Manda o "Confirme seu e-mail" (falha no envio não derruba o cadastro). E-mail que já tem conta (inclusive conta antiga, sem senha) → 409 | 201 · 400 · 409 · 429 |
+| POST | `/auth/entrar` | pública · 10/IP/15 min | `{ email, senha }` → sessão. E-mail sem conta, senha errada e conta sem senha dão o MESMO 401 "E-mail ou senha incorretos." (e o mesmo tempo) | 200 · 400 · 401 · 429 |
+| POST | `/auth/esqueci-senha` | pública · 5/IP/15 min | `{ email }` → manda o "Criar uma senha nova" depois da resposta (o 202 não espera banco nem e-mail). Mesma resposta — e mesmo tempo — pra e-mail com e sem conta, em cooldown de 60 s por endereço e com o provedor de e-mail fora do ar | 202 · 400 · 429 |
+| POST | `/auth/redefinir-senha` | pública · 20/IP/15 min | `{ token, senha }` → grava a senha, confirma o e-mail, gasta o link (uso único) e devolve a sessão. Senha fora da regra é 400 e não gasta o link | 200 · 400 · 401 · 429 |
+| POST | `/auth/verificar` | pública · 20/IP/15 min | `{ token }` do "Confirme seu e-mail" → sessão. Uso único; confirma o e-mail | 200 · 400 · 401 · 429 |
+| GET | `/me` | sessão | a conta: `{ id, email, emailVerificadoEm, ativo, temSenha, criadoEm }` | 200 · 401 · 404 |
+| POST | `/me/senha` | sessão · 10/IP/15 min | `{ senhaAtual?, senhaNova }` → troca a senha e devolve uma **sessão nova** `{ accessToken, expiresAt, subscriber }`: a senha nova encerra as sessões de antes, a do pedido inclusive. Atual errada é **400** em `details.senhaAtual` (nunca 401). `senhaAtual` só é dispensada na conta antiga, sem senha | 200 · 400 · 401 · 404 · 429 |
 | POST | `/me/descadastrar` | sessão | para o e-mail mensal (`ativo=false`; a sessão continua) | 200 · 401 · 404 |
 | POST | `/me/reativar` | sessão | volta a receber o e-mail mensal | 200 · 401 · 404 |
 | POST | `/descadastrar` | pública · 20/IP/15 min | `{ token }` do link do e-mail mensal; idempotente. Token de sessão não serve | 204 · 400 · 401 · 429 |
+
+Senha: 8 a 128 caracteres, só espaços não vale ("A senha precisa ter pelo menos 8 caracteres." / "A senha pode ter no máximo 128 caracteres."), nunca trimada nem normalizada. O entrar sem senha (`POST /auth/link-magico`) saiu da API e responde 404; conta antiga, criada por ele, cria a senha pelo Esqueci a senha ou em `POST /me/senha` só com a nova.
+
+Senha nova (redefinir ou trocar) encerra as sessões que já existiam: o token de sessão leva a versão das sessões da conta (`versao_sessao`), e token de versão velha é 401. Cada link do e-mail só serve pra sua rota: o do "Confirme seu e-mail" não redefine senha e o de "Criar uma senha nova" não abre sessão no `/auth/verificar`.
 
 ### Privacidade — LGPD (`privacidade`)
 
@@ -232,7 +241,7 @@ O cliente decide pelo `code` (estável) e mostra a `message` (pt-BR, pronta pra 
 | `VALIDACAO` | 400 | formato ou valor inválido |
 | `JSON_INVALIDO` | 400 | corpo não é JSON |
 | `REQUISICAO_INVALIDA` | 4xx | requisição malformada (encoding, charset) |
-| `NAO_AUTENTICADO` | 401 | sem sessão, sessão vencida, conta excluída, link inválido |
+| `NAO_AUTENTICADO` | 401 | sem sessão, sessão vencida, conta excluída, link inválido, e-mail ou senha incorretos |
 | `PROIBIDO` | 403 | reservado |
 | `NAO_ENCONTRADO` | 404 | não existe **ou é de outra pessoa** (as duas respondem igual) |
 | `ROTA_NAO_ENCONTRADA` | 404 | caminho inexistente |
@@ -252,7 +261,7 @@ O cliente decide pelo `code` (estável) e mostra a `message` (pt-BR, pronta pra 
 | `yarn db:check-migrations` | aplica `prisma/migrations` num Postgres descartável e compara com o `schema.prisma` (sai com 1 e mostra o SQL que falta) |
 | `yarn motor:check` | o motor copiado bate com o do frontend |
 
-**Ponta a ponta** (`src/test/e2e-fluxo.ts`): a composição inteira da produção (`loadConfig` → `createContainer` → `createApp` + `mountModules`), só com e-mail em memória e relógio fixo injetados. Duas pessoas: uma pede o link (e o reenvio em menos de 60 s é segurado), entra, sincroniza o perfil do onboarding, faz CRUD de gastos e dívidas, gera o plano (201, depois 200, depois versão 2), cria e publica meta, responde o check-in, recebe o e-mail do job com o descadastro no fragmento, se descadastra, exporta, exclui a conta e perde a sessão; a outra entra no meio e sai intacta. No fim, confere que nenhuma resposta trouxe id de outra pessoa, hash de token ou campo interno. O mesmo fluxo roda em memória (`e2e.test.ts`) e no Postgres (`e2e.integration.test.ts`, que ainda confere no banco que só restaram as linhas da segunda pessoa e as 24 categorias do catálogo).
+**Ponta a ponta** (`src/test/e2e-fluxo.ts`): a composição inteira da produção (`loadConfig` → `createContainer` → `createApp` + `mountModules`), só com e-mail em memória e relógio fixo injetados. Duas pessoas: uma cria a conta com senha (e o mesmo e-mail de novo é 409), confirma o e-mail pelo link, esquece a senha e cria outra pelo e-mail (o reenvio em menos de 60 s é segurado), troca a senha na conta, sincroniza o perfil do onboarding, faz CRUD de gastos e dívidas, gera o plano (201, depois 200, depois versão 2), cria e publica meta, responde o check-in, recebe o e-mail do job com o descadastro no fragmento, se descadastra, exporta, exclui a conta e perde a sessão; a outra entra no meio e sai intacta. No fim, confere que nenhuma resposta trouxe id de outra pessoa, senha, hash de senha ou de token, nem campo interno. O mesmo fluxo roda em memória (`e2e.test.ts`) e no Postgres (`e2e.integration.test.ts`, que ainda confere no banco que só restaram as linhas da segunda pessoa e as 24 categorias do catálogo).
 
 **Integração sem Docker**: o banco é o [PGlite](https://pglite.dev) (Postgres 18 em WASM) servido por TCP, com o mesmo PrismaClient e adapter da produção — ver `src/test/test-database.ts`. **O que ele não cobre**: concorrência (é uma sessão só — corridas, `FOR UPDATE` e isolamento dependem das constraints do banco e estão documentados no código) e diferenças do Postgres 16 de produção. Pra isso, rode contra um Postgres real no CI.
 

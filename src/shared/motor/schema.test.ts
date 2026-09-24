@@ -5,7 +5,15 @@
 
 import { describe, expect, it } from "vitest";
 import { MAX_DIVIDAS, MAX_GASTOS_FIXOS } from "./config";
-import { MORADIAS, MORADIAS_SEM_CUSTO, TIPOS_DIVIDA, TIPOS_RENDA, perfilSchema, validarPerfil } from "./schema";
+import {
+  MORADIAS,
+  MORADIAS_SEM_CUSTO,
+  TIPOS_DIVIDA,
+  TIPOS_RENDA,
+  dividaSchema,
+  perfilSchema,
+  validarPerfil,
+} from "./schema";
 /** Açúcar dos testes: um gasto fixo único, pra cenários que só olham o total. */
 const gastos = (valor: number) => (valor > 0 ? [{ categoria: "mercado", valor }] : []);
 
@@ -214,5 +222,39 @@ describe("validarPerfil — erros por campo, em pt-BR", () => {
     const e = erros(null);
     expect(Object.keys(e)).toEqual(["_"]);
     expect(typeof e._).toBe("string");
+  });
+});
+
+/*
+  Parcela maior que o saldo quase sempre é número trocado entre os campos. Sem
+  a trava, o plano descontava todo mês uma parcela maior que a dívida inteira.
+*/
+describe("dívida: parcela x saldo", () => {
+  const comDivida = (parcela: number | undefined) => ({
+    ...valido,
+    dividas: [{ tipo: "rotativo", saldo: 1000, ...(parcela !== undefined && { parcela }) }],
+  });
+
+  it("a dívida digitada (dividaSchema, usada pelo onboarding linha a linha) recusa parcela maior que o saldo", () => {
+    const r = dividaSchema.safeParse({ tipo: "rotativo", saldo: 1000, parcela: 5000 });
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.path).toEqual(["parcela"]);
+    expect(r.error?.issues[0]?.message).toBe("A parcela está maior que o total da dívida. Confere os dois valores?");
+  });
+
+  it("parcela igual ao saldo (a última) e parcela ausente passam", () => {
+    expect(dividaSchema.safeParse({ tipo: "rotativo", saldo: 1000, parcela: 1000 }).success).toBe(true);
+    expect(validarPerfil(comDivida(1000)).ok).toBe(true);
+    expect(validarPerfil(comDivida(undefined)).ok).toBe(true);
+  });
+
+  /*
+    Um perfil gravado antes da trava existir não pode sumir no F5: com a trava no
+    perfilSchema, a tela do plano mostrava "Ainda não tem plano por aqui" pra quem
+    já tinha plano. O motor limita a parcela ao saldo na conta (caminho.test.ts).
+  */
+  it("perfil JÁ SALVO com parcela maior que o saldo continua válido: o plano não some", () => {
+    expect(validarPerfil(comDivida(5000)).ok).toBe(true);
+    expect(perfilSchema.shape.dividas.safeParse(comDivida(5000).dividas).success).toBe(true);
   });
 });

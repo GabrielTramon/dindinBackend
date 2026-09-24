@@ -1,18 +1,22 @@
 import type {
   AuthTokenService,
+  BackgroundJobs,
   Clock,
   IdGenerator,
   Mailer,
+  PasswordHasher,
   SecureTokenGenerator,
   SessionAccounts,
   TransactionManager,
 } from '../shared/application/ports';
+import { InProcessBackgroundJobs } from '../shared/infra/background-jobs';
 import { createPrismaClient, PrismaDatabase, PrismaTransactionManager } from '../shared/infra/database/prisma';
 import { InMemoryTransactionManager } from '../shared/infra/in-memory/doubles';
 import { ConsoleMailer } from '../shared/infra/mail/console-mailer';
 import { ResendMailer } from '../shared/infra/mail/resend-mailer';
 import { CryptoSecureTokenGenerator } from '../shared/infra/security/crypto-secure-token-generator';
 import { JwtAuthTokenService } from '../shared/infra/security/jwt-auth-token-service';
+import { ScryptPasswordHasher } from '../shared/infra/security/scrypt-password-hasher';
 import { SystemClock, UuidGenerator } from '../shared/infra/system';
 import type { CategoriasRepository } from '../modules/categorias';
 import { InMemoryCategoriasRepository, PrismaCategoriasRepository } from '../modules/categorias/infra';
@@ -69,9 +73,13 @@ export interface Services {
   transactions: TransactionManager;
   authTokens: AuthTokenService;
   secureTokens: SecureTokenGenerator;
+  /** hash de senha (scrypt); os testes de caso de uso trocam por um instantâneo */
+  passwords: PasswordHasher;
   mailer: Mailer;
-  /** conta da sessão ainda existe? (ver authentication.ts) */
+  /** a sessão ainda vale? conta existe e a senha não mudou depois do token (ver authentication.ts) */
   sessionAccounts: SessionAccounts;
+  /** o que sai do caminho da resposta (o e-mail do Esqueci a senha); os testes esperam com idle() */
+  backgroundJobs: BackgroundJobs;
 }
 
 export interface Container {
@@ -146,11 +154,14 @@ function createInMemoryRepositories(): Repositories {
 }
 
 /**
- * Sessão só vale enquanto a conta existe: o JWT não é revogável e a exclusão (LGPD)
- * é física. Uma busca por chave primária a cada requisição autenticada.
+ * Sessão só vale enquanto a conta existe e na versão atual dela: o JWT não é
+ * revogável, a exclusão (LGPD) é física e a senha nova encerra as sessões de
+ * antes. Uma busca por chave primária a cada requisição autenticada.
  */
 function sessionAccountsOf(repositories: Repositories): SessionAccounts {
-  return { exists: async (subscriberId) => (await repositories.subscribers.findById(subscriberId)) !== null };
+  return {
+    sessionVersion: async (subscriberId) => (await repositories.subscribers.findById(subscriberId))?.versaoSessao ?? null,
+  };
 }
 
 /**
@@ -174,7 +185,9 @@ export function createContainer(config: AppConfig, overrides: Partial<Services> 
         clock,
       ),
     secureTokens: overrides.secureTokens ?? new CryptoSecureTokenGenerator(),
+    passwords: overrides.passwords ?? new ScryptPasswordHasher(),
     mailer: overrides.mailer ?? createMailer(config),
+    backgroundJobs: overrides.backgroundJobs ?? new InProcessBackgroundJobs(),
   };
 
   if (config.persistence === 'memoria') {
@@ -188,7 +201,7 @@ export function createContainer(config: AppConfig, overrides: Partial<Services> 
         sessionAccounts: overrides.sessionAccounts ?? sessionAccountsOf(repositories),
       },
       readiness: async () => {},
-      close: async () => {},
+      close: () => base.backgroundJobs.idle(),
     };
   }
 
@@ -206,6 +219,10 @@ export function createContainer(config: AppConfig, overrides: Partial<Services> 
     readiness: async () => {
       await prisma.$queryRaw`SELECT 1`;
     },
-    close: () => prisma.$disconnect(),
+    close: async () => {
+      // o e-mail que ainda está saindo termina antes de o banco fechar
+      await base.backgroundJobs.idle();
+      await prisma.$disconnect();
+    },
   };
 }

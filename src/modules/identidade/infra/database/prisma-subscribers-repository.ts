@@ -27,11 +27,17 @@ export class PrismaSubscribersRepository implements SubscribersRepository {
   }
 
   async save(subscriber: Subscriber): Promise<void> {
-    const { id, ...data } = toPersistence(subscriber);
+    const { id, senhaHash, versaoSessao, ...data } = toPersistence(subscriber);
     try {
-      await this.db.client.subscriber.upsert({ where: { id }, create: { id, ...data }, update: data });
+      // a senha e a versão das sessões entram no insert e ficam de fora do update: numa linha
+      // existente elas só mudam por savePassword/savePasswordReset (ver a interface)
+      await this.db.client.subscriber.upsert({
+        where: { id },
+        create: { id, senhaHash, versaoSessao, ...data },
+        update: data,
+      });
     } catch (error) {
-      // unique de email (corrida entre dois pedidos) ou de token (hash repetido de 256 bits aleatórios:
+      // unique de email (corrida entre dois cadastros) ou de token (hash repetido de 256 bits aleatórios:
       // na prática, nunca). Com driver adapter o P2002 não diz qual coluna — mesma mensagem pras duas.
       if (isUniqueViolation(error)) {
         throw new ConflictError('Já existe uma conta com esse e-mail.', { email: 'E-mail já cadastrado' });
@@ -44,7 +50,7 @@ export class PrismaSubscribersRepository implements SubscribersRepository {
     const s = toPersistence(subscriber);
     // o WHERE no token é o compare-and-set: dois cliques simultâneos no mesmo link
     // disputam a mesma linha e só um encontra o hash antigo. Só os campos do consumo
-    // entram no SET — ativo e e-mail gravados por outro pedido ficam como estão.
+    // entram no SET — ativo, e-mail e senha gravados por outro pedido ficam como estão.
     const { count } = await this.db.client.subscriber.updateMany({
       where: { id: s.id, token: usedTokenHash },
       data: {
@@ -53,6 +59,35 @@ export class PrismaSubscribersRepository implements SubscribersRepository {
         emailVerificadoEm: s.emailVerificadoEm,
         atualizadoEm: s.atualizadoEm,
       },
+    });
+    return count === 1;
+  }
+
+  async savePasswordReset(subscriber: Subscriber, usedTokenHash: string): Promise<boolean> {
+    const s = toPersistence(subscriber);
+    // o mesmo compare-and-set do consumo, com a senha no mesmo UPDATE: ou o link
+    // é gasto E a senha muda, ou nada muda
+    const { count } = await this.db.client.subscriber.updateMany({
+      where: { id: s.id, token: usedTokenHash },
+      data: {
+        token: s.token,
+        tokenExpiraEm: s.tokenExpiraEm,
+        emailVerificadoEm: s.emailVerificadoEm,
+        senhaHash: s.senhaHash,
+        versaoSessao: s.versaoSessao,
+        atualizadoEm: s.atualizadoEm,
+      },
+    });
+    return count === 1;
+  }
+
+  async savePassword(subscriber: Subscriber): Promise<boolean> {
+    const s = toPersistence(subscriber);
+    // só a senha (e a versão das sessões, que sobe com ela): um link emitido ou um
+    // descadastro gravados no meio continuam valendo
+    const { count } = await this.db.client.subscriber.updateMany({
+      where: { id: s.id },
+      data: { senhaHash: s.senhaHash, versaoSessao: s.versaoSessao, atualizadoEm: s.atualizadoEm },
     });
     return count === 1;
   }

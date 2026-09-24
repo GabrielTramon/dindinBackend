@@ -11,5 +11,5 @@ import { UnauthorizedError } from '../../../../shared/domain/errors';
  * a sessão acabou.
  */
 export function contaInexistente(): UnauthorizedError {
-  return new UnauthorizedError('Sua sessão expirou. Entre de novo pelo link no seu e-mail.');
+  return new UnauthorizedError('Sua sessão expirou. Entre de novo com seu e-mail e senha.');
 }

@@ -3,6 +3,7 @@ import type {
   EmailMessage,
   IdGenerator,
   Mailer,
+  PasswordHasher,
   SecureTokenGenerator,
   SessionAccounts,
   TransactionManager,
@@ -76,7 +77,7 @@ export class InMemoryMailer implements Mailer {
   }
 }
 
-/** Toda conta existe, até o teste dizer que foi excluída. */
+/** Toda conta existe, na versão 0 das sessões, até o teste dizer que foi excluída. */
 export class InMemorySessionAccounts implements SessionAccounts {
   private readonly deleted = new Set<string>();
 
@@ -84,8 +85,8 @@ export class InMemorySessionAccounts implements SessionAccounts {
     this.deleted.add(subscriberId);
   }
 
-  async exists(subscriberId: string): Promise<boolean> {
-    return !this.deleted.has(subscriberId);
+  async sessionVersion(subscriberId: string): Promise<number | null> {
+    return this.deleted.has(subscriberId) ? null : 0;
   }
 }
 
@@ -99,5 +100,23 @@ export class PredictableSecureTokenGenerator implements SecureTokenGenerator {
 
   hash(token: string): string {
     return `hash(${token})`;
+  }
+}
+
+/**
+ * Hash de senha instantâneo e legível: "abc12345" → "senha(abc12345)". O scrypt
+ * de verdade leva dezenas de ms por chamada — a suíte faria centenas. Guarda cada
+ * conferência pra o teste provar que a "de mentira" (e-mail sem conta) também roda.
+ */
+export class PredictablePasswordHasher implements PasswordHasher {
+  readonly verificacoes: Array<{ senha: string; hash: string }> = [];
+
+  async hash(senha: string): Promise<string> {
+    return `senha(${senha})`;
+  }
+
+  async verify(senha: string, hash: string): Promise<boolean> {
+    this.verificacoes.push({ senha, hash });
+    return hash === `senha(${senha})`;
   }
 }

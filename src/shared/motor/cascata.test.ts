@@ -67,16 +67,23 @@ function aporteEsperado(p: Plano): number {
   return Math.min(sugerido, teto);
 }
 
+/**
+ * O aporte vai em reais inteiros, arredondado pra baixo: a tela mostra dinheiro
+ * sem centavos, e só assim aporte + livre exibidos fecham no excedente exibido.
+ */
+const emReais = (v: number) => Math.floor(arredondar(v) + 1e-6);
+
 /** invariantes que valem pra qualquer plano com excedente > 0 */
 function esperarInvariantes(p: Plano) {
   expect(p.modoCorte).toBe(false);
   expect(p.corte).toBeNull();
-  // aporte é o excedente × proporção (com piso) arredondado ao centavo: meio centavo de tolerância, com folga de float
-  expect(Math.abs(p.aporte - aporteEsperado(p))).toBeLessThanOrEqual(0.0051);
-  // o piso nunca faz guardar menos do que o equilibrado guardaria neste degrau
+  // aporte é o excedente × proporção (com piso), em reais inteiros arredondados pra baixo
+  expect(Number.isInteger(p.aporte)).toBe(true);
+  expect(p.aporte).toBe(emReais(aporteEsperado(p)));
+  // o piso nunca faz guardar menos do que o equilibrado guardaria neste degrau (a menos do real cortado)
   const equilibrado = p.resumo.excedente * PROPORCAO_APORTE.equilibrado[p.degrau];
   const pedido = p.resumo.excedente * proporcaoAporte(p.perfil.ritmo, p.degrau);
-  expect(p.aporte).toBeGreaterThanOrEqual(Math.min(pedido, equilibrado) - 0.0051);
+  expect(p.aporte).toBeGreaterThanOrEqual(emReais(Math.min(pedido, equilibrado)));
   // e nunca faz guardar MAIS do que o ritmo pediu
   expect(p.aporte).toBeLessThanOrEqual(pedido + 0.0051);
   // sobra pelo menos a margem mínima da renda, ou o que o equilibrado deixaria
@@ -718,7 +725,7 @@ describe("cascata — invariantes em lote", () => {
         for (const c of comExcedente) {
           const p = gerarPlano({ ...c, ritmo });
           expect(p.piso.mordeu).toBe(false);
-          expect(p.aporte).toBe(arredondar(p.resumo.excedente * PROPORCAO_APORTE[ritmo][p.degrau]));
+          expect(p.aporte).toBe(emReais(p.resumo.excedente * PROPORCAO_APORTE[ritmo][p.degrau]));
         }
       }
     });
@@ -727,7 +734,7 @@ describe("cascata — invariantes em lote", () => {
       let mordidas = 0;
       for (const c of comExcedente) {
         const p = gerarPlano({ ...c, ritmo: "acelerado" });
-        const pedido = arredondar(p.resumo.excedente * PROPORCAO_APORTE.acelerado[p.degrau]);
+        const pedido = emReais(p.resumo.excedente * PROPORCAO_APORTE.acelerado[p.degrau]);
         expect(p.piso.sugerido).toBe(pedido);
         if (!p.piso.mordeu) {
           expect(p.aporte).toBe(pedido);

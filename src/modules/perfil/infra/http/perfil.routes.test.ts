@@ -323,6 +323,17 @@ describe('PUT /api/v1/perfil/completo', () => {
     expect(res.body.error.details).toHaveProperty([caminho]);
   });
 
+  it('parcela maior que o saldo → 400 no campo da parcela, e nada é gravado', async () => {
+    const res = await sincronizar('sub-1', {
+      ...COMPLETO,
+      dividas: [{ tipo: 'rotativo', saldo: 900 }, { tipo: 'emprestimo', saldo: 1000, parcela: 5000 }],
+    }).expect(400);
+    expect(res.body.error.details).toEqual({
+      'dividas.1.parcela': 'A parcela está maior que o total da dívida. Confere os dois valores?',
+    });
+    await obterCompleto('sub-1').expect(404);
+  });
+
   it('valor com 3 casas numa linha (regra do domínio) → 400 no caminho da linha, e nada é gravado', async () => {
     const antes = { ...COMPLETO, gastosFixos: [{ categoria: 'luz', valor: 120 }], dividas: [{ tipo: 'rotativo', saldo: 900 }] };
     await sincronizar('sub-1', antes).expect(200);

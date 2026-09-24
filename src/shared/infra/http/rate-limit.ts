@@ -4,8 +4,8 @@ import { errorBody } from './error-handler';
 
 /*
   Limite de requisições por IP. Usado nas rotas que disparam e-mail ou
-  validam token — sem ele, dá pra usar o link mágico pra bombardear a caixa
-  de alguém.
+  conferem token ou senha — sem ele, dá pra usar o Esqueci a senha pra
+  bombardear a caixa de alguém, ou testar senhas à vontade.
 
   O contador fica na memória do processo: com mais de uma instância da API,
   troque o `store` por um compartilhado (Redis) antes de escalar horizontalmente.

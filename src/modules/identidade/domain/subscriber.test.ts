@@ -125,6 +125,66 @@ describe('Subscriber', () => {
     expect(s.atualizadoEm).toEqual(depois);
   });
 
+  it('nasce sem senha quando não recebe o hash (conta antiga, do link mágico)', () => {
+    const s = novo('s1');
+    expect(s.senhaHash).toBeNull();
+    expect(s.temSenha).toBe(false);
+  });
+
+  it('criar com o hash da senha: temSenha, e o e-mail continua sem confirmação', () => {
+    const s = Subscriber.criar({ id: 's1', email: 'a@x.dev', tokenHash: 'h', tokenExpiraEm: emQuinzeMin, senhaHash: 'hash-da-senha', agora });
+    expect(s.senhaHash).toBe('hash-da-senha');
+    expect(s.temSenha).toBe(true);
+    expect(s.emailVerificadoEm).toBeNull();
+    expect(s.toSnapshot().senhaHash).toBe('hash-da-senha');
+  });
+
+  it('definirSenha troca o hash e atualizadoEm, sem mexer no link nem na confirmação', () => {
+    const s = novo('s1');
+    const depois = new Date('2026-09-18T10:00:00.000Z');
+    s.definirSenha('hash-novo-da-senha', depois);
+    expect(s.senhaHash).toBe('hash-novo-da-senha');
+    expect(s.temSenha).toBe(true);
+    expect(s.atualizadoEm).toEqual(depois);
+    expect(s.tokenHash).toBe('hash-s1');
+    expect(s.tokenExpiraEm).toEqual(emQuinzeMin);
+    expect(s.emailVerificadoEm).toBeNull();
+  });
+
+  it('definirSenha com hash vazio é defeito de programação: lança e não muda nada', () => {
+    const s = novo('s1');
+    expect(() => s.definirSenha('', agora)).toThrow('hash de senha vazio');
+    expect(s.temSenha).toBe(false);
+    expect(s.versaoSessao).toBe(0);
+  });
+
+  it('a conta nasce na versão 0 das sessões, e cada senha nova sobe uma (as sessões de antes caem)', () => {
+    const s = Subscriber.criar({ id: 's1', email: 'a@x.dev', tokenHash: 'h', tokenExpiraEm: emQuinzeMin, senhaHash: 'hash-da-senha', agora });
+    expect(s.versaoSessao).toBe(0);
+    s.definirSenha('hash-2', agora);
+    expect(s.versaoSessao).toBe(1);
+    s.definirSenha('hash-3', agora);
+    expect(s.versaoSessao).toBe(2);
+    expect(s.toSnapshot().versaoSessao).toBe(2);
+  });
+
+  it('link, confirmação e descadastro não mexem na versão das sessões', () => {
+    const s = novo('s1');
+    s.consumirLinkMagico(agora);
+    s.emitirLinkMagico('hash-novo', emQuinzeMin, agora);
+    s.invalidarLinkMagico(agora);
+    s.descadastrar(agora);
+    s.reativar(agora);
+    expect(s.versaoSessao).toBe(0);
+  });
+
+  it('consumir o link não mexe na senha', () => {
+    const s = Subscriber.criar({ id: 's1', email: 'a@x.dev', tokenHash: 'h', tokenExpiraEm: emQuinzeMin, senhaHash: 'hash-da-senha', agora });
+    s.consumirLinkMagico(agora);
+    s.invalidarLinkMagico(agora);
+    expect(s.senhaHash).toBe('hash-da-senha');
+  });
+
   it('restaurar e toSnapshot copiam: mexer na origem ou na cópia não altera a entidade', () => {
     const props = novo('s1').toSnapshot();
     const s = Subscriber.restaurar(props);

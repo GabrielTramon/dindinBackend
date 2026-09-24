@@ -39,7 +39,8 @@ describe("projeção da dívida cara no degrau 0", () => {
     expect(p.dividas.mesesParaQuitarCaras).not.toBeNull();
     expect(p.dividas.mesesParaQuitarCaras!).toBeGreaterThan(2);
     expect(p.proximosPassos.some((t) => t.includes("não é opcional"))).toBe(false);
-    expect(p.proximosPassos.some((t) => t.includes("zeram em"))).toBe(true);
+    // uma dívida só: o verbo concorda com ela
+    expect(p.proximosPassos.some((t) => t.includes("o rotativo do cartão zera em"))).toBe(true);
   });
 
   it("o prazo da dívida no degrau 0 é maior do que seria já no degrau 1", () => {
@@ -177,6 +178,8 @@ describe("o ritmo atravessa as projeções", () => {
       motivo: "juros",
       ritmoQueResolve: "equilibrado",
       mesesNoRitmoQueResolve: equilibrado.dividas.mesesParaQuitarCaras,
+      // um ritmo resolve: não há por que falar em guardar 100%
+      guardandoTudo: null,
     });
     // o ritmo que resolve é o mais lento que resolve, não o mais rápido de todos
     expect(equilibrado.diagnosticoCaras).toBeNull();
@@ -189,6 +192,8 @@ describe("o ritmo atravessa as projeções", () => {
       motivo: "juros",
       ritmoQueResolve: null,
       mesesNoRitmoQueResolve: null,
+      // nem guardando tudo o que sobra os 40 mil zeram
+      guardandoTudo: null,
     });
     for (const ritmo of RITMOS) {
       expect(gerarPlano({ ...base, dividas: [{ tipo: "rotativo", saldo: 40000 }], ritmo })
@@ -217,11 +222,127 @@ describe("classificação e sobra de parcela", () => {
   });
 
   it("a sobra da parcela no mês em que a dívida zera reforça a próxima no mesmo mês", () => {
-    // sem juros: A = 100 com parcela 300 (sobra 200 no mês 1), B = 200 sem parcela e sem extra
+    // sem juros: A = 250 com parcela 100 (no mês 3 deve só 50: sobram 50), B = 50 sem parcela e sem extra.
+    // Se a sobra só entrasse no mês seguinte, B zeraria no mês 4.
     const [a, b] = avaliarDividas([
-      { tipo: "outra", saldo: 100, taxaAnual: 0, parcela: 300 },
-      { tipo: "outra", saldo: 200, taxaAnual: 0 },
+      { tipo: "outra", saldo: 250, taxaAnual: 0, parcela: 100 },
+      { tipo: "outra", saldo: 50, taxaAnual: 0 },
     ]);
-    expect(simularQuitacao([a, b], 0)).toBe(1);
+    expect(simularQuitacao([a, b], 0)).toBe(3);
+  });
+});
+
+describe("parcela maior que o saldo", () => {
+  it("o motor limita a parcela ao saldo: ninguém paga por mês mais do que deve no total", () => {
+    const [d] = avaliarDividas([{ tipo: "rotativo", saldo: 1000, parcela: 5000 }]);
+    expect(d.parcela).toBe(1000);
+    const p = gerarPlano({ ...base, dividas: [{ tipo: "rotativo", saldo: 1000, parcela: 5000 }] });
+    expect(p.resumo.parcelas).toBe(1000);
+  });
+
+  it("parcela ausente continua ausente", () => {
+    const [d] = avaliarDividas([{ tipo: "rotativo", saldo: 1000 }]);
+    expect(d).not.toHaveProperty("parcela");
+  });
+});
+
+/*
+  Quando a dívida cara zera, a parcela dela sai do orçamento: a sobra cresce e o
+  aporte da reserva cresce junto. Projetar a reserva com a sobra apertada de hoje
+  prometia "4 anos e 4 meses" pra algo que fecha em pouco mais de um ano.
+*/
+describe("a reserva depois da dívida cara usa a parcela liberada", () => {
+  const comEmprestimo: Perfil = {
+    rendaMensal: 3000,
+    tipoRenda: "clt",
+    idade: 24,
+    moradia: "aluguel",
+    custoMoradia: 800,
+    gastosFixos: gastos(500),
+    dividas: [{ tipo: "emprestimo", saldo: 5000, parcela: 1400 }],
+    guardado: 1000,
+  };
+
+  it("excedente 300 hoje; 1.700 quando o empréstimo zera → reserva em 4 + ⌈7.100 / 850⌉ = 13 meses", () => {
+    const p = gerarPlano(comEmprestimo);
+    expect(p.degrau).toBe(1);
+    expect(p.resumo.excedente).toBe(300);
+    expect(p.dividas.mesesParaQuitarCaras).toBe(4);
+    expect(p.reserva).toMatchObject({ alvo: 8100, falta: 7100 });
+    // o equilibrado guarda metade da sobra na reserva: 1.700 × 0,5 = 850
+    const aporteDepois = Math.floor(1700 * proporcaoAporte("equilibrado", 2));
+    expect(p.reserva.mesesParaCompletar).toBe(4 + Math.ceil(7100 / aporteDepois));
+    expect(p.reserva.mesesParaCompletar).toBe(13);
+  });
+
+  it("sem parcela informada nada muda: o aporte depois das caras é o de hoje", () => {
+    const p = gerarPlano({ ...comEmprestimo, dividas: [{ tipo: "rotativo", saldo: 1000 }] });
+    const aporte2 = Math.floor(p.resumo.excedente * proporcaoAporte("equilibrado", 2));
+    const caras = p.dividas.mesesParaQuitarCaras!;
+    expect(p.reserva.mesesParaCompletar).toBe(caras + Math.ceil(p.reserva.falta / aporte2));
+  });
+
+  it("a dívida média também começa a ser antecipada com a parcela da cara de volta", () => {
+    const comMedia: Perfil = {
+      ...comEmprestimo,
+      dividas: [...comEmprestimo.dividas, { tipo: "financiamento", saldo: 20000, parcela: 600 }],
+      rendaMensal: 3600,
+    };
+    const p = gerarPlano(comMedia);
+    const inicio = p.reserva.mesesParaCompletar!;
+    const excedenteDepois = p.resumo.excedente + 1400;
+    // a reserva usou a sobra com a parcela de volta…
+    const aporte2 = Math.floor(excedenteDepois * proporcaoAporte("equilibrado", 2));
+    expect(inicio).toBe(p.dividas.mesesParaQuitarCaras! + Math.ceil(p.reserva.falta / aporte2));
+    // …e a média também: extra zero até a reserva fechar, depois o aporte do degrau 3 sobre a sobra maior
+    const aporte3 = Math.floor(excedenteDepois * proporcaoAporte("equilibrado", 3));
+    const esperado = simularQuitacao(p.dividas.medias, {
+      extra: (mes) => (mes > inicio ? aporte3 : 0),
+      regimeAPartirDe: inicio + 1,
+    });
+    expect(esperado).not.toBeNull();
+    expect(p.dividas.mesesParaQuitarMedias).toBe(esperado);
+  });
+});
+
+/*
+  Aporte em reais inteiros: a tela mostra dinheiro sem centavos, e "Separe
+  R$ 578 … O que fica — R$ 1.073" somava um real a mais do que a sobra.
+*/
+describe("aporte + livre fecham no excedente exibido", () => {
+  it("ritmo leve na reserva (0,35 × 1.650 = 577,5): aporte 577, livre 1.073", () => {
+    const p = gerarPlano({
+      rendaMensal: 2500,
+      tipoRenda: "clt",
+      idade: 22,
+      moradia: "pais",
+      custoMoradia: 0,
+      gastosFixos: gastos(850),
+      dividas: [],
+      guardado: 1000,
+      ritmo: "leve",
+    });
+    expect(p.degrau).toBe(2);
+    expect(p.resumo.excedente).toBe(1650);
+    expect(p.aporte).toBe(577);
+    expect(p.livre).toBe(1073);
+    expect(p.proximosPassos[0]).toContain("Separe R$\u00a0577");
+    // o passo n\u00e3o afirma quanto fica livre: os potes da pessoa mudam esse n\u00famero
+    // (quem diz o valor \u00e9 o cart\u00e3o, que conhece os potes)
+    expect(p.proximosPassos[0]).not.toContain("R$\u00a01.073");
+  });
+
+  it("em qualquer ritmo e renda com centavos, os valores arredondados somam o excedente arredondado", () => {
+    for (const renda of [2345.67, 3194.76, 1999.99, 4200.5]) {
+      for (const ritmo of RITMOS) {
+        for (const guardado of [0, 1000, 20000]) {
+          const p = gerarPlano({ ...base, rendaMensal: renda, ritmo, guardado });
+          if (p.modoCorte) continue;
+          expect(Number.isInteger(p.aporte)).toBe(true);
+          expect(p.aporte + Math.round(p.livre)).toBe(Math.round(p.resumo.excedente));
+          expect(p.livre).toBeGreaterThanOrEqual(0);
+        }
+      }
+    }
   });
 });

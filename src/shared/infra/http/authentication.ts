@@ -10,15 +10,17 @@ import { UnauthorizedError } from '../../domain/errors';
     Token vencido não vira "anônimo" em silêncio: o cliente precisa saber que
     a sessão acabou, senão mostra dados de visitante achando que está logado.
 
-  Além da assinatura, os dois conferem se a conta ainda existe (SessionAccounts):
-  conta excluída = sessão encerrada. É uma busca por chave primária.
+  Além da assinatura, os dois perguntam ao SessionAccounts pela conta (uma busca
+  por chave primária): conta excluída = sessão encerrada; versão do token
+  diferente da versaoSessao da conta = a senha mudou depois que o token saiu,
+  sessão encerrada também.
 
   optionalAuth manda `Vary: Authorization`: a mesma URL responde diferente com e
   sem token, e sem o Vary o cache do navegador entrega a resposta pública pra
   quem acabou de entrar.
 */
 
-const SESSION_EXPIRED = 'Sua sessão expirou. Entre de novo pelo link no seu e-mail.';
+const SESSION_EXPIRED = 'Sua sessão expirou. Entre de novo com seu e-mail e senha.';
 
 function bearerToken(req: Request): string | undefined {
   const header = req.get('authorization');
@@ -36,7 +38,9 @@ export function createAuthMiddlewares(tokens: AuthTokenService, accounts: Sessio
   async function sessionFrom(token: string): Promise<{ subscriberId: string } | null> {
     const session = token ? tokens.verifySession(token) : null;
     if (!session) return null;
-    return (await accounts.exists(session.subscriberId)) ? session : null;
+    const versaoAtual = await accounts.sessionVersion(session.subscriberId);
+    // só o id segue pra requisição: a versão é assunto daqui
+    return versaoAtual !== null && versaoAtual === session.versao ? { subscriberId: session.subscriberId } : null;
   }
 
   const requireAuth: RequestHandler = async (req, _res, next) => {

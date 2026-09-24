@@ -237,6 +237,13 @@ export interface DiagnosticoDividaCara {
   ritmoQueResolve: Ritmo | null;
   /** prazo nesse ritmo, em meses; null quando nenhum resolve */
   mesesNoRitmoQueResolve: number | null;
+  /**
+   * Só quando NENHUM ritmo resolve: guardar tudo o que sobra (100%, à mão)
+   * zera as caras? `valor` é esse "tudo" em reais inteiros e `meses` o prazo.
+   * null = nem assim zera (aí sim renegociar é o único caminho), ou ela já
+   * guarda tudo, ou algum ritmo já resolve.
+   */
+  guardandoTudo: { valor: number; meses: number } | null;
 }
 
 export interface Plano {

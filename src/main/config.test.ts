@@ -14,9 +14,9 @@ describe('loadConfig', () => {
     const c = loadConfig({ PERSISTENCIA: 'memoria', JWT_SECRET: SEGREDO });
     expect(c).toMatchObject({
       env: 'development',
-      port: 3333,
+      port: 3701,
       persistence: 'memoria',
-      corsOrigins: ['http://localhost:3000'],
+      corsOrigins: ['http://localhost:3700'],
       sessionTtlSeconds: 30 * 24 * 60 * 60,
       mail: { provider: 'console' },
     });
@@ -91,6 +91,33 @@ describe('loadConfig', () => {
 
     it('valor que não é booleano é recusado', () => {
       expect(() => loadConfig({ ...memoria, RATE_LIMIT: 'sim' })).toThrow(/RATE_LIMIT/);
+    });
+  });
+
+  describe('validade dos links do e-mail', () => {
+    const memoria = { PERSISTENCIA: 'memoria', JWT_SECRET: SEGREDO };
+
+    it('padrão: confirmação do e-mail em 48 h, senha nova em 15 min', () => {
+      expect(loadConfig({ ...memoria })).toMatchObject({ confirmationLinkTtlHours: 48, resetLinkTtlMinutes: 15 });
+    });
+
+    it('LINK_CONFIRMACAO_HORAS e LINK_MAGICO_MINUTOS (o nome antigo continua valendo pro link de senha nova)', () => {
+      expect(
+        loadConfig({ ...memoria, LINK_CONFIRMACAO_HORAS: '24', LINK_MAGICO_MINUTOS: '30' }),
+      ).toMatchObject({ confirmationLinkTtlHours: 24, resetLinkTtlMinutes: 30 });
+    });
+
+    it('LINK_CONFIRMACAO_HORAS recusa zero, fração, texto e mais de uma semana', () => {
+      for (const valor of ['0', '1.5', 'abc', '169']) {
+        expect(() => loadConfig({ ...memoria, LINK_CONFIRMACAO_HORAS: valor })).toThrow(/LINK_CONFIRMACAO_HORAS/);
+      }
+      expect(loadConfig({ ...memoria, LINK_CONFIRMACAO_HORAS: '168' }).confirmationLinkTtlHours).toBe(168);
+    });
+
+    it('LINK_MAGICO_MINUTOS continua entre 5 e 1440', () => {
+      for (const valor of ['4', '1441']) {
+        expect(() => loadConfig({ ...memoria, LINK_MAGICO_MINUTOS: valor })).toThrow(/LINK_MAGICO_MINUTOS/);
+      }
     });
   });
 

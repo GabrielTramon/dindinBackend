@@ -320,6 +320,14 @@ describe('POST /api/v1/planos/simular', () => {
     });
   });
 
+  it('parcela maior que o saldo → 400 no campo da parcela (a trava do onboarding)', async () => {
+    const res = await simular({ ...CAIO, dividas: [{ tipo: 'rotativo', saldo: 1000, parcela: 5000 }] }).expect(400);
+    expect(res.body.error.details).toEqual({
+      'dividas.0.parcela': 'A parcela está maior que o total da dívida. Confere os dois valores?',
+    });
+    await simular({ ...CAIO, dividas: [{ tipo: 'rotativo', saldo: 1000, parcela: 1000 }] }).expect(200);
+  });
+
   it('centavos válidos passam (R$ 19,99 não é recusado por ponto flutuante)', async () => {
     await simular({ ...CAIO, rendaMensal: 1919.99, gastosFixos: [{ categoria: 'pet', valor: 19.99 }] }).expect(200);
   });

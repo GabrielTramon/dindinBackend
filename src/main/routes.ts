@@ -37,10 +37,13 @@ export function mountModules(api: Router, container: Container): void {
       subscribers: r.subscribers,
       secureTokens: s.secureTokens,
       authTokens: s.authTokens,
+      passwords: s.passwords,
       mailer: s.mailer,
+      backgroundJobs: s.backgroundJobs,
       config: {
         appUrl: config.appUrl,
-        magicLinkTtlMinutes: config.magicLinkTtlMinutes,
+        confirmationLinkTtlHours: config.confirmationLinkTtlHours,
+        resetLinkTtlMinutes: config.resetLinkTtlMinutes,
         linkResendCooldownSeconds: config.linkResendCooldownSeconds,
       },
       // o limite usa req.ip: atrás de proxy, TRUST_PROXY precisa estar certo

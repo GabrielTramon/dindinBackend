@@ -12,12 +12,13 @@ datasource db {
 // ============================================================================
 // dindin — planejador financeiro
 //
-// Nada disso é usado pelo app ainda: no v1 o plano vive no localStorage do
-// navegador e não existe cadastro. O banco entra na fase do check-in mensal,
-// quando a pessoa deixa o e-mail pra receber o lembrete.
+// O plano vive no localStorage do navegador e o app funciona sem conta. A
+// conta (e-mail + senha) existe pra baixar o PDF do plano, receber o e-mail
+// mensal e usar em mais de um aparelho.
 //
-// Por isso não há senha em lugar nenhum: a identidade é o e-mail mais um
-// token de link mágico.
+// A senha nunca é gravada: só o hash scrypt (senha_hash). Os links que vão
+// por e-mail (confirmar o endereço, criar uma senha nova) guardam só o
+// SHA-256 do token (coluna token).
 //
 // Os `slug` de CategoriaGastoFixo são contrato com o frontend
 // (dindinFrontend/src/domain/categorias.ts). Slug publicado não muda.
@@ -30,13 +31,24 @@ datasource db {
 model Subscriber {
   id            String    @id @default(uuid())
   email         String    @unique
-  /// SHA-256 do token do link mágico — o token em si só existe no e-mail.
-  /// Rotacionado a cada envio e trocado por um valor inutilizável depois de usado.
+  /// a finalidade do link + o SHA-256 do token que vai por e-mail
+  /// ("confirmacao:<hex>" ou "redefinicao:<hex>") — o token em si só existe no
+  /// e-mail, e cada link só serve pra sua finalidade. Rotacionado a cada envio e
+  /// trocado por um valor inutilizável depois de usado.
   token         String    @unique
   tokenExpiraEm DateTime? @map("token_expira_em")
 
-  /// preenchido no primeiro link mágico usado; sem isso a pessoa nunca recebe
-  /// o e-mail mensal — o endereço pode ter sido digitado por outra pessoa
+  /// hash scrypt da senha (scrypt$N$r$p$<sal>$<hash>), nunca a senha. Nulo nas
+  /// contas antigas, criadas pelo link mágico, até a pessoa criar uma senha
+  senhaHash String? @map("senha_hash")
+
+  /// sobe a cada senha nova (redefinir ou trocar) e vai dentro de cada token de
+  /// sessão: token de outra versão não vale — a senha nova encerra as sessões de antes
+  versaoSessao Int @default(0) @map("versao_sessao")
+
+  /// preenchido no primeiro link do e-mail usado (confirmação ou senha nova);
+  /// sem isso a pessoa nunca recebe o e-mail mensal — o endereço pode ter sido
+  /// digitado por outra pessoa
   emailVerificadoEm DateTime? @map("email_verificado_em")
 
   /// descadastro em um clique: mantém o histórico, para de enviar

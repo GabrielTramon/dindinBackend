@@ -6,12 +6,16 @@ import { loadConfig } from '../main/config';
 import { createContainer, type Container, type Repositories } from '../main/container';
 import { createJobs } from '../main/jobs/jobs';
 import { mountModules } from '../main/routes';
+import type { BackgroundJobs } from '../shared/application/ports';
 import type { ErrorLogger } from '../shared/infra/http/error-handler';
 import { FixedClock, InMemoryMailer } from '../shared/infra/in-memory/doubles';
 import { MAX_PAGE_LIMIT } from '../shared/application/pagination';
 import { PROPORCAO_APORTE } from '../shared/motor/config';
 import { arredondar } from '../shared/motor/format';
 import { TEST_JWT_SECRET } from './kit';
+
+/** O motor guarda em reais inteiros, pra baixo; a folga cobre o ponto flutuante (419,99999 é 420). */
+const emReaisInteiros = (v: number) => Math.floor(arredondar(v) + 1e-6);
 
 /*
   O sistema inteiro, ponta a ponta, pelo HTTP: a mesma composição da produção
@@ -22,9 +26,11 @@ import { TEST_JWT_SECRET } from './kit';
     src/test/e2e.test.ts               PERSISTENCIA=memoria (yarn test)
     src/test/e2e.integration.test.ts   PERSISTENCIA=prisma contra Postgres/PGlite (yarn test:integration)
 
-  Duas pessoas: Ana faz o caminho inteiro, até excluir a conta; Bruno entra no
+  Duas pessoas: Ana faz o caminho inteiro — cria a conta com senha, confirma o
+  e-mail, esquece a senha, troca a senha… até excluir a conta; Bruno entra no
   meio e tem que sair intacto. Toda resposta fica registrada, e no fim o fluxo
-  confere que nenhuma trouxe o id da outra pessoa, hash de token ou campo interno.
+  confere que nenhuma trouxe o id da outra pessoa, senha, hash de senha ou de
+  token, nem campo interno.
 */
 
 export const APP_URL_E2E = 'https://dindin.app';
@@ -37,7 +43,10 @@ export const APP_URL_E2E = 'https://dindin.app';
  */
 export const PASSOS_DO_FLUXO = [
   'a API está de pé e a persistência responde',
-  'Ana pede o link, o reenvio em menos de 60 s é segurado, e ela entra',
+  'Ana cria a conta com e-mail e senha e já entra; o mesmo e-mail de novo é 409',
+  'Ana confirma o e-mail pelo link, que vale uma vez só',
+  'Ana esquece a senha: o link do e-mail cria uma nova, o reenvio em menos de 60 s é segurado, a antiga para de entrar e a sessão de antes cai',
+  'Ana troca a senha com a sessão: a atual errada é 400, nunca 401; a troca devolve sessão nova e derruba as outras',
   'sem perfil: gerar plano é 422 e adicionar gasto é 422',
   'PUT /perfil/completo com o perfil do onboarding do frontend',
   'GET /perfil/completo e GET /perfil devolvem o que ficou gravado',
@@ -48,7 +57,7 @@ export const PASSOS_DO_FLUXO = [
   'POST /planos cria a versão 1 (201) e de novo devolve a mesma (200)',
   'perfil muda → POST /planos cria a versão 2; histórico e atual acompanham',
   'meta: criar, publicar e ver a página pública sem token e sem valores em reais',
-  'Bruno entra no meio, monta o perfil, gera plano e cria meta',
+  'Bruno cria a conta no meio, confirma o e-mail, monta o perfil, gera plano e cria meta',
   'Bruno não enxerga nem mexe em nada da Ana (404, igual a inexistente)',
   'PUT /check-ins do mês anterior compara com a versão que valia naquele mês',
   'salário bruto, dependentes, ritmo e meta atravessam o perfil e chegam no plano',
@@ -59,7 +68,7 @@ export const PASSOS_DO_FLUXO = [
   'GET /me/exportar traz tudo da Ana e nada do Bruno',
   'DELETE /me exige a confirmação; com ela apaga, e a mesma sessão passa a dar 401',
   'Bruno continua intacto',
-  'nenhuma resposta vazou id de outra pessoa, hash de token ou campo interno',
+  'nenhuma resposta vazou id de outra pessoa, senha, hash de senha ou de token, nem campo interno',
 ] as const;
 
 export interface AmbienteE2E {
@@ -237,7 +246,11 @@ interface Pessoa {
 class ApiRegistrada {
   readonly respostas: RespostaRegistrada[] = [];
 
-  constructor(private readonly app: Express) {}
+  /** @param tarefas o que a API deixa pra depois da resposta (o e-mail do Esqueci a senha): cada chamada espera terminar */
+  constructor(
+    private readonly app: Express,
+    private readonly tarefas: BackgroundJobs,
+  ) {}
 
   async chamar(
     ator: Ator,
@@ -249,6 +262,8 @@ class ApiRegistrada {
     if (opcoes.sessao) pedido = pedido.set('Authorization', `Bearer ${opcoes.sessao}`);
     if (opcoes.corpo !== undefined) pedido = pedido.send(opcoes.corpo);
     const res = await pedido;
+    // o 202 do Esqueci a senha sai antes do e-mail: o fluxo olha a caixa de entrada depois que ele saiu
+    await this.tarefas.idle();
     const rota = `${metodo.toUpperCase()} ${caminho}`;
     this.respostas.push({ ator, rota, status: res.status, texto: res.text ?? '', corpo: res.body });
     if (opcoes.status !== undefined) expect(res.status, `${rota} → ${res.text}`).toBe(opcoes.status);
@@ -279,8 +294,16 @@ function chavesDoJson(valor: unknown, chaves = new Set<string>()): Set<string> {
   return chaves;
 }
 
-/** chaves que nenhum JSON de resposta pode ter (dono, chave interna, segredo do link) */
-const CAMPOS_QUE_NUNCA_SAEM = ['subscriberId', 'profileId', 'tokenHash', 'token', 'tokenExpiraEm'];
+/** chaves que nenhum JSON de resposta pode ter (dono, chave interna, segredo do link, senha) */
+const CAMPOS_QUE_NUNCA_SAEM = ['subscriberId', 'profileId', 'tokenHash', 'token', 'tokenExpiraEm', 'senha', 'senhaHash'];
+
+/** as senhas que a Ana usa ao longo do fluxo: cadastro, "Esqueci a senha" e troca na página da conta */
+const SENHAS_DA_ANA = {
+  cadastro: 'Ana: a senha do cadastro',
+  peloEmail: 'Ana: a senha nova pelo e-mail',
+  naConta: '  Ana: a senha trocada na conta  ',
+};
+const SENHA_DO_BRUNO = 'bruno-senha-123';
 
 // ── o fluxo ──────────────────────────────────────────────────────────────────
 
@@ -294,11 +317,25 @@ export interface ResultadoDoFluxo {
 }
 
 export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<ResultadoDoFluxo> {
-  const api = new ApiRegistrada(amb.app);
+  const api = new ApiRegistrada(amb.app, amb.container.services.backgroundJobs);
   const { mailer, clock } = amb;
   const r = amb.container.repositories;
   const passos: string[] = [];
-  const tokensMagicos: string[] = [];
+  /** os tokens que foram nos links dos e-mails (confirmação e senha nova) */
+  const tokensDosLinks: string[] = [];
+  /** as senhas digitadas e os hashes gravados: nenhum pode aparecer numa resposta */
+  const senhasUsadas: string[] = [];
+  const hashesDeSenha: string[] = [];
+
+  /** guarda o hash da senha que está gravado agora (pra conferir no fim que ele nunca saiu) */
+  async function guardarHashDaSenha(subscriberId: string): Promise<string> {
+    const hash = (await r.subscribers.findById(subscriberId))?.senhaHash;
+    expect(hash, 'a conta tem senha gravada').toEqual(expect.any(String));
+    // só o hash, nunca a senha em si
+    for (const senha of senhasUsadas) expect(hash).not.toContain(senha);
+    hashesDeSenha.push(hash!);
+    return hash!;
+  }
 
   /**
    * Cada passo acontece um minuto depois do anterior: datas de criação não
@@ -316,40 +353,45 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     passos.push(nome);
   }
 
-  async function entrar(ator: Ator, email: string, conferirReenvio = false): Promise<Pessoa> {
+  /**
+   * POST /auth/cadastrar: a conta nasce com a senha e a sessão sai na hora. O
+   * "Confirme seu e-mail" chega com o link no fragmento; devolve o token dele.
+   */
+  async function criarConta(ator: Ator, email: string, senha: string): Promise<{ pessoa: Pessoa; tokenDeConfirmacao: string }> {
+    const normalizado = email.trim().toLowerCase();
+    senhasUsadas.push(senha);
     const antes = mailer.sent.length;
-    const pedido = await api.chamar(ator, 'post', '/auth/link-magico', { corpo: { email }, status: 202 });
-    expect(pedido.body).toEqual({ message: 'Se esse e-mail puder entrar, o link chega em instantes.' });
-    expect(mailer.sent.length).toBe(antes + 1);
-    const mensagem = mailer.last()!;
-    expect(mensagem.to).toBe(email.trim().toLowerCase());
-    const token = tokenNoFragmento(mensagem.text, '/entrar');
-    tokensMagicos.push(token);
-
-    if (conferirReenvio) {
-      // mesmo e-mail antes de 60 s: a mesma resposta, e nenhum e-mail novo (não revela nada, não lota a caixa)
-      const reenvio = await api.chamar(ator, 'post', '/auth/link-magico', { corpo: { email }, status: 202 });
-      expect(reenvio.body).toEqual(pedido.body);
-      expect(mailer.sent.length).toBe(antes + 1);
-    }
-
-    const verificado = await api.chamar(ator, 'post', '/auth/verificar', { corpo: { token }, status: 200 });
-    expect(verificado.headers['cache-control']).toBe('no-store');
-    expect(verificado.body).toMatchObject({
+    const criada = await api.chamar(ator, 'post', '/auth/cadastrar', { corpo: { email, senha }, status: 201 });
+    expect(criada.headers['cache-control']).toBe('no-store');
+    expect(criada.headers.location).toBe('/api/v1/me');
+    expect(criada.body).toEqual({
       accessToken: expect.any(String),
       expiresAt: expect.any(String),
-      subscriber: { email: email.trim().toLowerCase(), emailVerificadoEm: clock.now().toISOString(), ativo: true },
+      subscriber: { id: expect.any(String), email: normalizado, emailVerificadoEm: null, ativo: true },
     });
 
-    // link é de uso único
-    await api.chamar(ator, 'post', '/auth/verificar', { corpo: { token }, status: 401 });
+    expect(mailer.sent.length).toBe(antes + 1);
+    const mensagem = mailer.last()!;
+    expect(mensagem.to).toBe(normalizado);
+    expect(mensagem.subject).toBe('Confirme seu e-mail no dindin');
+    const tokenDeConfirmacao = tokenNoFragmento(mensagem.text, '/entrar');
+    tokensDosLinks.push(tokenDeConfirmacao);
 
-    return {
-      ator,
-      email: email.trim().toLowerCase(),
-      id: verificado.body.subscriber.id,
-      sessao: verificado.body.accessToken,
-    };
+    const pessoa = { ator, email: normalizado, id: criada.body.subscriber.id, sessao: criada.body.accessToken };
+    await guardarHashDaSenha(pessoa.id);
+    return { pessoa, tokenDeConfirmacao };
+  }
+
+  /** POST /auth/verificar com o link do e-mail: confirma, abre sessão e não funciona duas vezes. */
+  async function confirmarEmail(pessoa: Pessoa, token: string): Promise<void> {
+    const confirmado = await api.chamar(pessoa.ator, 'post', '/auth/verificar', { corpo: { token }, status: 200 });
+    expect(confirmado.headers['cache-control']).toBe('no-store');
+    expect(confirmado.body).toMatchObject({
+      accessToken: expect.any(String),
+      subscriber: { id: pessoa.id, email: pessoa.email, emailVerificadoEm: clock.now().toISOString(), ativo: true },
+    });
+    // link é de uso único
+    await api.chamar(pessoa.ator, 'post', '/auth/verificar', { corpo: { token }, status: 401 });
   }
 
   let ana!: Pessoa;
@@ -371,11 +413,159 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     await api.chamar('anonimo', 'get', '/api/health/ready', { status: 200 });
   });
 
-  await passo('Ana pede o link, o reenvio em menos de 60 s é segurado, e ela entra', async () => {
-    ana = await entrar('ana', '  Ana.Souza@Exemplo.com ', true);
+  let tokenDeConfirmacaoDaAna = '';
+
+  await passo('Ana cria a conta com e-mail e senha e já entra; o mesmo e-mail de novo é 409', async () => {
+    // o login sem senha saiu da API
+    await api.chamar('anonimo', 'post', '/auth/link-magico', { corpo: { email: 'ana.souza@exemplo.com' }, status: 404 });
+
+    const criada = await criarConta('ana', '  Ana.Souza@Exemplo.com ', SENHAS_DA_ANA.cadastro);
+    ana = criada.pessoa;
+    tokenDeConfirmacaoDaAna = criada.tokenDeConfirmacao;
+
+    // a sessão do cadastro já vale, antes de confirmar o e-mail
     const me = await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 200 });
     expect(me.headers['cache-control']).toBe('private, no-store');
-    expect(me.body).toMatchObject({ id: ana.id, email: 'ana.souza@exemplo.com', ativo: true });
+    expect(me.body).toEqual({
+      id: ana.id,
+      email: 'ana.souza@exemplo.com',
+      emailVerificadoEm: null,
+      ativo: true,
+      temSenha: true,
+      criadoEm: clock.now().toISOString(),
+    });
+
+    // o mesmo e-mail de novo: 409 com a mensagem pra tela, e nenhum e-mail a mais
+    const antes = mailer.sent.length;
+    const repetido = await api.chamar('anonimo', 'post', '/auth/cadastrar', {
+      corpo: { email: 'ANA.SOUZA@exemplo.com', senha: 'outra senha qualquer' },
+      status: 409,
+    });
+    expect(repetido.body.error).toMatchObject({
+      code: 'CONFLITO',
+      message: 'Já existe uma conta com esse e-mail. Entre com a sua senha ou use “Esqueci a senha”.',
+    });
+    expect(mailer.sent.length).toBe(antes);
+
+    // entrar: senha errada e e-mail sem conta dão o MESMO 401; a certa entra
+    const errada = await api.chamar('anonimo', 'post', '/auth/entrar', {
+      corpo: { email: ana.email, senha: 'não é a senha dela' },
+      status: 401,
+    });
+    const semConta = await api.chamar('anonimo', 'post', '/auth/entrar', {
+      corpo: { email: 'ninguem@exemplo.com', senha: SENHAS_DA_ANA.cadastro },
+      status: 401,
+    });
+    expect(errada.body.error.message).toBe('E-mail ou senha incorretos.');
+    expect(semConta.body.error.message).toBe(errada.body.error.message);
+    const entrou = await api.chamar('ana', 'post', '/auth/entrar', {
+      corpo: { email: ' ANA.souza@Exemplo.com', senha: SENHAS_DA_ANA.cadastro },
+      status: 200,
+    });
+    expect(entrou.headers['cache-control']).toBe('no-store');
+    expect(entrou.body.subscriber).toEqual({ id: ana.id, email: ana.email, emailVerificadoEm: null, ativo: true });
+  });
+
+  await passo('Ana confirma o e-mail pelo link, que vale uma vez só', async () => {
+    await confirmarEmail(ana, tokenDeConfirmacaoDaAna);
+    const me = await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 200 });
+    expect(me.body.emailVerificadoEm).toBe(clock.now().toISOString());
+  });
+
+  await passo(
+    'Ana esquece a senha: o link do e-mail cria uma nova, o reenvio em menos de 60 s é segurado, a antiga para de entrar e a sessão de antes cai',
+    async () => {
+      const antes = mailer.sent.length;
+      const pedido = await api.chamar('anonimo', 'post', '/auth/esqueci-senha', { corpo: { email: ana.email }, status: 202 });
+      // a mesma resposta pra e-mail sem conta: não revela quem tem conta
+      const semConta = await api.chamar('anonimo', 'post', '/auth/esqueci-senha', {
+        corpo: { email: 'ninguem@exemplo.com' },
+        status: 202,
+      });
+      expect(pedido.body).toEqual({
+        message: 'Se existir uma conta com esse e-mail, o link pra criar uma senha nova chega em instantes.',
+      });
+      expect(semConta.body).toEqual(pedido.body);
+      expect(mailer.sent.length).toBe(antes + 1);
+      const mensagem = mailer.last()!;
+      expect(mensagem.to).toBe(ana.email);
+      expect(mensagem.subject).toBe('Criar uma senha nova no dindin');
+      const token = tokenNoFragmento(mensagem.text, '/redefinir-senha');
+      tokensDosLinks.push(token);
+
+      // pedir de novo antes de 60 s: a mesma resposta, e nenhum e-mail novo (não lota a caixa de ninguém)
+      const reenvio = await api.chamar('anonimo', 'post', '/auth/esqueci-senha', { corpo: { email: ana.email }, status: 202 });
+      expect(reenvio.body).toEqual(pedido.body);
+      expect(mailer.sent.length).toBe(antes + 1);
+
+      senhasUsadas.push(SENHAS_DA_ANA.peloEmail);
+      // quem abre o link é a Ana: a resposta traz a conta dela
+      const redefinida = await api.chamar('ana', 'post', '/auth/redefinir-senha', {
+        corpo: { token, senha: SENHAS_DA_ANA.peloEmail },
+        status: 200,
+      });
+      expect(redefinida.headers['cache-control']).toBe('no-store');
+      expect(redefinida.body.subscriber).toMatchObject({ id: ana.id, email: ana.email, emailVerificadoEm: expect.any(String) });
+      // o link é de uso único
+      await api.chamar('anonimo', 'post', '/auth/redefinir-senha', {
+        corpo: { token, senha: 'mais uma senha nova' },
+        status: 401,
+      });
+      await guardarHashDaSenha(ana.id);
+
+      await api.chamar('anonimo', 'post', '/auth/entrar', {
+        corpo: { email: ana.email, senha: SENHAS_DA_ANA.cadastro },
+        status: 401,
+      });
+      await api.chamar('ana', 'post', '/auth/entrar', { corpo: { email: ana.email, senha: SENHAS_DA_ANA.peloEmail }, status: 200 });
+      // a senha nova encerrou as sessões de antes (a do cadastro, de 30 dias): só a da redefinição vale
+      await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 401 });
+      ana = { ...ana, sessao: redefinida.body.accessToken };
+      await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 200 });
+    },
+  );
+
+  await passo('Ana troca a senha com a sessão: a atual errada é 400, nunca 401; a troca devolve sessão nova e derruba as outras', async () => {
+    senhasUsadas.push(SENHAS_DA_ANA.naConta);
+    await api.chamar('anonimo', 'post', '/me/senha', { corpo: { senhaNova: SENHAS_DA_ANA.naConta }, status: 401 });
+    const errada = await api.chamar('ana', 'post', '/me/senha', {
+      sessao: ana.sessao,
+      corpo: { senhaAtual: SENHAS_DA_ANA.cadastro, senhaNova: SENHAS_DA_ANA.naConta },
+      status: 400,
+    });
+    expect(errada.body.error).toMatchObject({ code: 'VALIDACAO', details: { senhaAtual: 'A senha atual não confere.' } });
+
+    // outro aparelho da Ana, aberto antes da troca
+    const outroAparelho = await api.chamar('ana', 'post', '/auth/entrar', {
+      corpo: { email: ana.email, senha: SENHAS_DA_ANA.peloEmail },
+      status: 200,
+    });
+    const trocada = await api.chamar('ana', 'post', '/me/senha', {
+      sessao: ana.sessao,
+      corpo: { senhaAtual: SENHAS_DA_ANA.peloEmail, senhaNova: SENHAS_DA_ANA.naConta },
+      status: 200,
+    });
+    // a troca devolve uma sessão nova: as de antes caíram, a deste pedido também
+    expect(trocada.headers['cache-control']).toBe('no-store');
+    expect(trocada.body).toEqual({
+      accessToken: expect.any(String),
+      expiresAt: expect.any(String),
+      subscriber: { id: ana.id, email: ana.email, emailVerificadoEm: expect.any(String), ativo: true },
+    });
+    await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 401 });
+    await api.chamar('ana', 'get', '/me', { sessao: outroAparelho.body.accessToken, status: 401 });
+    ana = { ...ana, sessao: trocada.body.accessToken };
+    await guardarHashDaSenha(ana.id);
+
+    // a senha nova vale como foi digitada, espaços das pontas inclusive
+    await api.chamar('anonimo', 'post', '/auth/entrar', {
+      corpo: { email: ana.email, senha: SENHAS_DA_ANA.naConta.trim() },
+      status: 401,
+    });
+    await api.chamar('ana', 'post', '/auth/entrar', { corpo: { email: ana.email, senha: SENHAS_DA_ANA.naConta }, status: 200 });
+    // e a sessão nova vale
+    const me = await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 200 });
+    expect(me.body.temSenha).toBe(true);
   });
 
   await passo('sem perfil: gerar plano é 422 e adicionar gasto é 422', async () => {
@@ -622,8 +812,11 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect(lista.body.items).toHaveLength(1);
   });
 
-  await passo('Bruno entra no meio, monta o perfil, gera plano e cria meta', async () => {
-    bruno = await entrar('bruno', 'bruno@exemplo.com.br');
+  await passo('Bruno cria a conta no meio, confirma o e-mail, monta o perfil, gera plano e cria meta', async () => {
+    const criada = await criarConta('bruno', 'bruno@exemplo.com.br', SENHA_DO_BRUNO);
+    bruno = criada.pessoa;
+    // confirmado: é isso que põe o Bruno no e-mail mensal do job
+    await confirmarEmail(bruno, criada.tokenDeConfirmacao);
     expect(bruno.id).not.toBe(ana.id);
     const perfil = await api.chamar('bruno', 'put', '/perfil/completo', { sessao: bruno.sessao, corpo: PERFIL_DO_BRUNO, status: 200 });
     expect(perfil.body).toEqual(PERFIL_DO_BRUNO);
@@ -754,8 +947,8 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     */
     const { degrau, resumo, aporte, piso } = v3.body.resultado;
     expect(degrau).toBe(1);
-    expect(piso.sugerido).toBe(arredondar(resumo.excedente * PROPORCAO_APORTE.acelerado[degrau as 0 | 1 | 2 | 3 | 4]));
-    expect(aporte).toBe(arredondar(Math.min(piso.sugerido, piso.teto)));
+    expect(piso.sugerido).toBe(emReaisInteiros(resumo.excedente * PROPORCAO_APORTE.acelerado[degrau as 0 | 1 | 2 | 3 | 4]));
+    expect(aporte).toBe(Math.min(piso.sugerido, piso.teto));
 
     /*
       E o ritmo é entrada de verdade, não enfeite: o MESMO perfil no leve guarda
@@ -767,7 +960,7 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     });
     expect(noLeve.body.resultado.ritmo).toBe('leve');
     expect(noLeve.body.resultado.aporte).toBe(
-      arredondar(resumo.excedente * PROPORCAO_APORTE.leve[degrau as 0 | 1 | 2 | 3 | 4]),
+      emReaisInteiros(resumo.excedente * PROPORCAO_APORTE.leve[degrau as 0 | 1 | 2 | 3 | 4]),
     );
     expect(noLeve.body.resultado.aporte).toBeLessThan(aporte);
 
@@ -777,7 +970,9 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
       silêncio: são sete listas campo a campo entre o corpo do PATCH e o motor,
       e o campo é opcional, então nenhuma delas quebra a compilação se esquecer.
     */
-    const escolhido = arredondar(aporte + 100);
+    // abaixo do teto do ritmo; acima dele também vale (ver o /planos/simular abaixo)
+    const escolhido = arredondar(aporte - 100);
+    expect(escolhido).toBeLessThan(piso.teto);
     const comEscolha = await api.chamar('ana', 'patch', '/perfil', {
       sessao: ana.sessao,
       corpo: { aporteEscolhido: escolhido },
@@ -789,8 +984,30 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect(v4.body.entrada.aporteEscolhido).toBe(escolhido);
     expect(v4.body.resultado.aporte).toBe(escolhido);
     expect(v4.body.resultado.livre).toBe(arredondar(resumo.excedente - escolhido));
-    // o piso do ritmo não limita uma escolha explícita: quem avisa é a tela
+    // "mordeu" fala do ritmo: com escolha à mão ele não se aplica
     expect(v4.body.resultado.piso.mordeu).toBe(false);
+
+    /*
+      O piso é da SUGESTÃO do ritmo, não da escolha: à mão a pessoa passa do
+      teto e pode guardar tudo o que sobra ("liberdade total com o dinheiro
+      dela"). Só a sobra limita. Pela calculadora pública, que não grava versão
+      (a v4 continua sendo a última).
+    */
+    const tudoQueSobra = emReaisInteiros(resumo.excedente);
+    expect(piso.teto + 100).toBeLessThanOrEqual(tudoQueSobra);
+    const acimaDoTeto = await api.chamar('anonimo', 'post', '/planos/simular', {
+      corpo: { ...(perfilComRitmo as object), aporteEscolhido: piso.teto + 100 },
+      status: 200,
+    });
+    expect(acimaDoTeto.body.resultado.aporte).toBe(piso.teto + 100);
+    expect(acimaDoTeto.body.resultado.livre).toBe(arredondar(resumo.excedente - piso.teto - 100));
+
+    const acimaDaSobra = await api.chamar('anonimo', 'post', '/planos/simular', {
+      corpo: { ...(perfilComRitmo as object), aporteEscolhido: resumo.excedente + 500 },
+      status: 200,
+    });
+    expect(acimaDaSobra.body.resultado.aporte).toBe(tudoQueSobra);
+    expect(acimaDaSobra.body.resultado.livre).toBe(arredondar(resumo.excedente - tudoQueSobra));
   });
 
   await passo('plano novo não reescreve o passado: o check-in de agosto continua igual', async () => {
@@ -936,6 +1153,10 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     const dados = res.body;
 
     expect(dados.conta).toMatchObject({ email: ana.email, ativo: false, emailVerificadoEm: expect.any(String) });
+    // da senha, nada: nem o hash, nem se existe
+    expect(Object.keys(dados.conta).sort()).toEqual(['ativo', 'criadoEm', 'email', 'emailVerificadoEm']);
+    for (const hash of hashesDeSenha) expect(res.text).not.toContain(hash);
+    expect(res.text).not.toMatch(/scrypt\$/);
     // a exportação leva as respostas NOVAS do perfil também: sem elas o arquivo
     // da LGPD sai incompleto e nenhum outro teste fica vermelho
     expect(dados.perfil).toMatchObject({
@@ -1050,16 +1271,22 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     });
   });
 
-  await passo('nenhuma resposta vazou id de outra pessoa, hash de token ou campo interno', async () => {
-    const hashes = tokensMagicos.map((t) => amb.container.services.secureTokens.hash(t));
+  await passo('nenhuma resposta vazou id de outra pessoa, senha, hash de senha ou de token, nem campo interno', async () => {
+    const hashes = tokensDosLinks.map((t) => amb.container.services.secureTokens.hash(t));
+    expect(tokensDosLinks, 'os links dos e-mails: 2 confirmações e 1 senha nova').toHaveLength(3);
+    expect(new Set(hashesDeSenha).size, 'um hash por senha: cadastro, e-mail, conta e o do Bruno').toBe(4);
     const vazamentos: string[] = [];
     for (const resposta of api.respostas) {
       const onde = `${resposta.ator} ${resposta.rota} (${resposta.status})`;
       const outros = resposta.ator === 'ana' ? [bruno.id] : resposta.ator === 'bruno' ? [ana.id] : [ana.id, bruno.id];
       for (const id of outros) if (resposta.texto.includes(id)) vazamentos.push(`${onde}: id de outra pessoa`);
-      for (const segredo of [...hashes, ...tokensMagicos]) {
-        if (resposta.texto.includes(segredo)) vazamentos.push(`${onde}: token do link mágico ou hash`);
+      for (const segredo of [...hashes, ...tokensDosLinks]) {
+        if (resposta.texto.includes(segredo)) vazamentos.push(`${onde}: token do link do e-mail ou hash dele`);
       }
+      for (const segredo of [...senhasUsadas, ...hashesDeSenha]) {
+        if (resposta.texto.includes(segredo)) vazamentos.push(`${onde}: senha ou hash de senha`);
+      }
+      if (/scrypt\$/.test(resposta.texto)) vazamentos.push(`${onde}: algo no formato do hash de senha`);
       if (resposta.texto.includes('consumido:')) vazamentos.push(`${onde}: valor interno da coluna token`);
       const chaves = chavesDoJson(resposta.corpo);
       for (const campo of CAMPOS_QUE_NUNCA_SAEM) if (chaves.has(campo)) vazamentos.push(`${onde}: campo "${campo}"`);

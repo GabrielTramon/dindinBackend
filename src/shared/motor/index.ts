@@ -64,4 +64,45 @@ export {
   METAS_TIPO,
 } from "./schema";
 export type { PerfilInput, PerfilValidado } from "./schema";
-export { NOME_DIVIDA, ROTULO_DIVIDA, ROTULO_DEGRAU, ROTULO_RITMO } from "./textos";
+export {
+  LIVRE_MINIMO,
+  NOME_DIVIDA,
+  ROTULO_DIVIDA,
+  ROTULO_DEGRAU,
+  ROTULO_RITMO,
+  semPrazoCarasDoPlano,
+} from "./textos";
+export {
+  simularRitmos,
+  limitesDoDivisor,
+  outrosPotesQueCabem,
+  reescalarGrupos,
+  reescalarAporteEscolhido,
+  repartirEmReaisInteiros,
+  pctDe,
+  pctDoGuardar,
+  valorDePct,
+  valorDePctNoTeto,
+  passoPct,
+} from "./divisor";
+export type { SimulacaoRitmo, LimitesDoDivisor } from "./divisor";
+export {
+  marcosDoPlano,
+  caminhoDoPlano,
+  projetarMetaNoCaminho,
+  projetarMetaDoPlano,
+  aportePrevistoNasMetas,
+  mesEstimado,
+  mesCurto,
+} from "./marcos";
+export type { Marco, EstadoMarco, OpcoesMarcos, CaminhoDoPlano, MetaNoCaminho } from "./marcos";
+export { respostaDoPlano, cabeMaisNaMeta, NOME_CURTO_DIVIDA, NOME_RITMO, textosDivisor, textosPote } from "./resposta";
+export type {
+  Resposta,
+  RespostaPlano,
+  AlvoResposta,
+  RespostaCorte,
+  TempoResposta,
+  SegmentoRitmo,
+  OpcoesResposta,
+} from "./resposta";

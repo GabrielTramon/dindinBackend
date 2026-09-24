@@ -195,10 +195,11 @@ describe("proximosPassos", () => {
   });
 
   it("degrau 1 diz em quantos meses as caras zeram, ou manda renegociar", () => {
-    expect(gerarPlano(porDegrau[1]).proximosPassos.some((t) => t.includes("zeram em"))).toBe(true);
+    // uma dívida só: singular, com o nome dela
+    expect(gerarPlano(porDegrau[1]).proximosPassos.some((t) => t.includes("o rotativo do cartão zera em"))).toBe(true);
     const nunca = gerarPlano(perfil({ rendaMensal: 2000, dividas: [{ tipo: "rotativo", saldo: 30000 }], guardado: 1000 }));
     expect(nunca.proximosPassos.some((t) => t.includes("Renegociar"))).toBe(true);
-    expect(nunca.proximosPassos.some((t) => t.includes("zeram em"))).toBe(false);
+    expect(nunca.proximosPassos.some((t) => t.includes("zera em"))).toBe(false);
   });
 
   /*
@@ -237,7 +238,7 @@ describe("proximosPassos", () => {
 
     it("no equilibrado o prazo aparece normalmente, sem aviso", () => {
       const p = gerarPlano({ ...apertado, ritmo: "equilibrado" });
-      expect(p.proximosPassos.some((t) => t.includes("zeram em"))).toBe(true);
+      expect(p.proximosPassos.some((t) => t.includes("o empréstimo zera em"))).toBe(true);
       expect(p.proximosPassos.some((t) => t.includes("Neste ritmo"))).toBe(false);
     });
 
@@ -280,10 +281,135 @@ describe("proximosPassos", () => {
     });
   });
 
-  it("degrau 3 diz quando a dívida média termina; degrau 4 pede pra separar o aporte pra um objetivo, sem prometer cálculo que ainda não existe", () => {
-    expect(gerarPlano(porDegrau[3]).proximosPassos.some((t) => t.includes("termina em"))).toBe(true);
-    const passoMeta = gerarPlano(porDegrau[4]).proximosPassos.find((t) => t.includes("objetivo seu"));
-    expect(passoMeta).toContain("Em breve");
+  it("degrau 3 diz quando a dívida média termina", () => {
+    expect(gerarPlano(porDegrau[3]).proximosPassos.some((t) => t.includes("o financiamento termina em"))).toBe(true);
+  });
+
+  /*
+    A meta já existe (pergunta 9, cartão "Sua meta" com o mês de chegada):
+    prometer "em breve o dindin calcula" é texto de uma versão que já passou.
+  */
+  describe("degrau 4 fala da meta que existe, sem prometer funcionalidade futura", () => {
+    it("com meta: o passo e a alocação usam o nome dela", () => {
+      const p = gerarPlano({ ...porDegrau[4], meta: { tipo: "viagem", valorAlvo: 5000 } });
+      expect(p.degrau).toBe(4);
+      const passo = p.proximosPassos.find((t) => t.startsWith("Guarde os"))!;
+      expect(passo).toBe(
+        `Guarde os ${formatBRL(p.aporte)} num lugar separado, só pra sua meta: Viagem. Em "Sua meta" você vê quanto tempo falta pra chegar lá.`,
+      );
+      expect(p.alocacoes.find((a) => a.destino === "metas")?.descricao).toBe("Vai pra sua meta: Viagem.");
+    });
+
+    it("meta com nome próprio aparece pelo nome que a pessoa deu", () => {
+      const p = gerarPlano({ ...porDegrau[4], meta: { tipo: "outro", nome: "Show em SP", valorAlvo: 800 } });
+      expect(p.proximosPassos.some((t) => t.includes("só pra sua meta: Show em SP."))).toBe(true);
+    });
+
+    it("sem meta: pede pra definir uma, sem 'em breve'", () => {
+      const p = gerarPlano(porDegrau[4]);
+      expect(p.proximosPassos.some((t) => t.includes("objetivo seu") && t.includes("pergunta da meta"))).toBe(true);
+    });
+
+    it("nenhum cenário promete 'em breve'", () => {
+      for (const perfilCenario of todos) {
+        for (const frase of frases(gerarPlano(perfilCenario))) {
+          expect(frase, frase).not.toMatch(/em breve/i);
+        }
+      }
+    });
+  });
+});
+
+/*
+  Concordância: NOME_DIVIDA já traz o artigo ("o empréstimo", "essa dívida").
+  No meio da frase ele contrai ("pro", "do", "dessa") e o pronome segue o gênero.
+*/
+describe("concordância das frases de dívida", () => {
+  it("nunca escreve 'pra o' nem 'de o', em nenhum cenário", () => {
+    for (const perfilCenario of todos) {
+      for (const frase of frases(gerarPlano(perfilCenario))) {
+        expect(frase, frase).not.toMatch(/\bpra o\b|\bde o\b|\bde essa\b/);
+      }
+    }
+  });
+
+  it("alocação de uma dívida cara: 'Vai inteiro pro …'; de várias: 'Vai pro … primeiro'", () => {
+    expect(gerarPlano(porDegrau[1]).alocacoes[0].descricao).toMatch(/^Vai inteiro pro rotativo do cartão, /);
+    const duas = gerarPlano(
+      perfil({ dividas: [{ tipo: "rotativo", saldo: 1000 }, { tipo: "cheque_especial", saldo: 1000 }], guardado: 1000 }),
+    );
+    expect(duas.alocacoes[0].descricao).toMatch(/^Vai pro rotativo do cartão primeiro/);
+    // "outra" é feminina: "pra essa dívida"
+    const outra = gerarPlano(perfil({ dividas: [{ tipo: "outra", saldo: 800 }], guardado: 1000 }));
+    expect(outra.alocacoes[0].descricao).toMatch(/^Vai inteiro pra essa dívida, /);
+  });
+
+  it("dívida 'outra' média: 'a taxa dela'; no corte: 'ela sozinha'", () => {
+    const media = gerarPlano(perfil({ dividas: [{ tipo: "outra", saldo: 5000, taxaAnual: 0.2 }], guardado: 10000 }));
+    expect(media.degrau).toBe(3);
+    expect(media.decisao.titulo).toBe("Seu próximo passo é antecipar essa dívida.");
+    expect(media.decisao.texto).toMatch(/^A taxa dela \(20% ao ano\)/);
+    // masculino continua masculino
+    expect(gerarPlano(porDegrau[3]).decisao.texto).toMatch(/^A taxa dele /);
+
+    const corteOutra = gerarPlano(perfil({ rendaMensal: 1500, gastosFixos: gastos(1700), dividas: [{ tipo: "outra", saldo: 3000 }] }));
+    expect(corteOutra.corte!.sugestoes[0]).toContain("ela sozinha custa");
+    expect(gerarPlano(corte.completo).corte!.sugestoes[0]).toContain("ele sozinho custa");
+  });
+
+  it("uma dívida cara: singular, com o nome dela; várias: plural", () => {
+    const uma = gerarPlano(perfil({ dividas: [{ tipo: "outra", saldo: 800 }], guardado: 1000 }));
+    expect(uma.proximosPassos.some((t) => t.startsWith("Mantendo esse ritmo, essa dívida zera em"))).toBe(true);
+    const duas = gerarPlano(
+      perfil({ dividas: [{ tipo: "rotativo", saldo: 1000 }, { tipo: "cheque_especial", saldo: 1000 }], guardado: 1000 }),
+    );
+    expect(duas.proximosPassos.some((t) => t.startsWith("Mantendo esse ritmo, as dívidas caras zeram em"))).toBe(true);
+  });
+
+  it("sem ritmo que resolva, com uma dívida só: 'os juros do rotativo', não 'das dívidas caras'", () => {
+    const p = gerarPlano(perfil({ rendaMensal: 2000, dividas: [{ tipo: "rotativo", saldo: 30000 }], guardado: 1000 }));
+    const aviso = p.proximosPassos.find((t) => t.includes("é o único caminho"))!;
+    expect(aviso).toContain("os juros do rotativo do cartão crescem");
+    expect(aviso).not.toContain("dívidas caras");
+  });
+
+  it("várias dívidas médias: o prazo é de todas, e o texto diz isso", () => {
+    const p = gerarPlano(
+      perfil({
+        rendaMensal: 4000,
+        dividas: [
+          { tipo: "financiamento", saldo: 15000, parcela: 500 },
+          { tipo: "outra", saldo: 3000, taxaAnual: 0.2, parcela: 200 },
+        ],
+        guardado: 20000,
+      }),
+    );
+    expect(p.degrau).toBe(3);
+    expect(p.dividas.mesesParaQuitarMedias).not.toBeNull();
+    expect(p.proximosPassos.some((t) => t.includes("as dívidas médias terminam em"))).toBe(true);
+    expect(p.proximosPassos.some((t) => t.includes("o financiamento termina em"))).toBe(false);
+  });
+
+  it("'o maior peso do orçamento' só quando a moradia é mesmo o maior gasto", () => {
+    const moradiaMaior = gerarPlano(
+      perfil({
+        rendaMensal: 2000,
+        moradia: "aluguel",
+        custoMoradia: 900,
+        gastosFixos: [
+          { categoria: "mercado", valor: 600 },
+          { categoria: "faculdade", valor: 600 },
+        ],
+      }),
+    ).corte!;
+    expect(moradiaMaior.sugestoes.find((t) => t.startsWith("Moradia leva"))).toBe(
+      "Moradia leva 45% da sua renda: passa dos 30% e é o maior peso do orçamento. Vale olhar dividir, negociar ou mudar.",
+    );
+    // corte.completo: moradia 900, mas o mercado sozinho é 1.200
+    const outroMaior = gerarPlano(corte.completo).corte!;
+    expect(outroMaior.sugestoes[1]).toBe(
+      "Moradia leva 45% da sua renda: passa dos 30%. Vale olhar dividir, negociar ou mudar.",
+    );
   });
 });
 

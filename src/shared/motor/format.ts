@@ -77,6 +77,50 @@ export function mascaraCentavosBRL(texto: string): string {
 }
 
 /**
+ * Lê um valor em reais colado (ou preenchido pelo navegador) de uma vez, em
+ * qualquer formato comum: "2.500,50", "2500,5", "R$ 2.500,00", "2,500.00",
+ * "3247.8", "3500". O último separador só é decimal quando vem seguido de 1 ou
+ * 2 dígitos no fim; qualquer outro é de milhar. Sem dígito nenhum → undefined.
+ *
+ * Existe porque as máscaras de digitação só olham dígitos: colar "2.500,50"
+ * virava R$ 250.050 no campo inteiro, e colar "3500" virava R$ 35,00 no de centavos.
+ */
+export function lerReaisColados(texto: string): number | undefined {
+  const limpo = texto.replace(/[^\d.,]/g, "");
+  const decimal = /[.,](\d{1,2})$/.exec(limpo);
+  const inteira = (decimal ? limpo.slice(0, decimal.index) : limpo).replace(/\D/g, "");
+  if (inteira === "" && !decimal) return undefined;
+  return Number(`${inteira || "0"}.${decimal?.[1] ?? "0"}`);
+}
+
+/**
+ * Leitura do campo de reais inteiros enquanto a pessoa digita. A máscara só põe
+ * pontos, então uma vírgula ali foi a pessoa que digitou: o que vem depois são
+ * centavos, e o valor arredonda pro real mais próximo — "2.500,50" é R$ 2.501,
+ * não R$ 250.050. `maxDigitos` limita a parte inteira.
+ */
+export function lerReaisInteiros(texto: string, maxDigitos = 9): number | undefined {
+  const virgula = texto.indexOf(",");
+  const inteira = (virgula < 0 ? texto : texto.slice(0, virgula)).replace(/\D/g, "").slice(0, maxDigitos);
+  const centavos = virgula < 0 ? "" : texto.slice(virgula + 1).replace(/\D/g, "").slice(0, 2);
+  if (inteira === "" && centavos === "") return undefined;
+  return Math.round(Number(`${inteira || "0"}.${centavos || "0"}`));
+}
+
+/**
+ * O que fica na tela do campo inteiro enquanto a pessoa digita centavos: a
+ * vírgula e até 2 dígitos depois dela ("2.500,5"). Sem vírgula, null — vale a
+ * máscara de sempre. Ler o texto devolvido dá o mesmo valor que ler o original.
+ */
+export function rascunhoReaisInteiros(texto: string, maxDigitos = 9): string | null {
+  const virgula = texto.indexOf(",");
+  if (virgula < 0) return null;
+  const inteira = mascaraInteiroBRL(texto.slice(0, virgula).replace(/\D/g, "").slice(0, maxDigitos));
+  const centavos = texto.slice(virgula + 1).replace(/\D/g, "").slice(0, 2);
+  return `${inteira || "0"},${centavos}`;
+}
+
+/**
  * Máscara de digitação de uma taxa em porcentagem: só dígitos, uma vírgula e no
  * máximo duas casas, limitada a `maxPct`.
  *

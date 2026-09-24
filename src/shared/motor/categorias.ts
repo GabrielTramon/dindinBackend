@@ -93,9 +93,22 @@ export function categoriaPorSlug(slug: string): Categoria | undefined {
   return POR_SLUG.get(slug);
 }
 
-/** As que aparecem na pergunta de gastos fixos: moradia já foi perguntada, "outro" tem botão próprio. */
+/*
+  Categorias que continuam no catálogo (quem já gravou segue vendo nome e ícone)
+  mas saíram da pergunta de gastos fixos.
+
+  financiamento_veiculo: parcela de financiamento é dívida, e a pergunta de
+  dívidas já pede a parcela — é ela que alimenta a simulação de quitação.
+  Oferecer as duas fazia a mesma parcela entrar duas vezes no custo do mês.
+*/
+export const SLUGS_FORA_DO_ONBOARDING: ReadonlySet<string> = new Set(["financiamento_veiculo"]);
+
+/**
+ * As que aparecem na pergunta de gastos fixos: moradia já foi perguntada,
+ * "outro" tem botão próprio e as aposentadas ficam só no catálogo.
+ */
 export const CATEGORIAS_DO_ONBOARDING = CATEGORIAS.filter(
-  (c) => c.grupo !== "moradia" && c.slug !== SLUG_OUTRO,
+  (c) => c.grupo !== "moradia" && c.slug !== SLUG_OUTRO && !SLUGS_FORA_DO_ONBOARDING.has(c.slug),
 );
 
 /** Grupos na ordem do catálogo, cada um com suas categorias do onboarding. */

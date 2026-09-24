@@ -2,7 +2,7 @@ import type { EmailMessage, Mailer } from '../../application/ports';
 
 /**
  * Desenvolvimento: em vez de enviar, imprime no terminal — é assim que você
- * pega o link mágico sem configurar provedor nenhum.
+ * pega o link do e-mail (confirmação, senha nova) sem configurar provedor nenhum.
  */
 export class ConsoleMailer implements Mailer {
   async send(message: EmailMessage): Promise<void> {

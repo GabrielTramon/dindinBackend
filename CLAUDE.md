@@ -13,7 +13,7 @@ API do dindin: planejador financeiro gratuito em pt-BR. Monólito modular com cl
 - `yarn job:abrir-check-ins` — o job do dia 1 (`src/main/jobs/`); agendar depois das 03:00 UTC
 - Antes de entregar: `yarn typecheck && yarn test && yarn test:integration && yarn build && yarn motor:check && yarn db:check-migrations`
 - CLIs sempre via `npx` — o shim do Yarn 1 quebra com o espaço no caminho do usuário. `yarn add` e `yarn <script>` funcionam.
-- Subir sem banco: `PERSISTENCIA=memoria JWT_SECRET=<32+ chars> yarn dev`. O link mágico aparece no terminal (`EMAIL_PROVEDOR=console`).
+- Subir sem banco: `PERSISTENCIA=memoria JWT_SECRET=<32+ chars> yarn dev`. Os e-mails ("Confirme seu e-mail", "Criar uma senha nova") aparecem no terminal com o link (`EMAIL_PROVEDOR=console`). Pra testar à mão sem mexer na API de ninguém, suba noutra porta (`PORT=3702`).
 
 ## Arquitetura
 
@@ -22,7 +22,7 @@ src/
   main/                 composição: config, container, routes, app, server, jobs — o ÚNICO lugar que escolhe implementações
   shared/
     domain/             errors (AppError e subclasses), guards
-    application/        ports (Clock, IdGenerator, TransactionManager, AuthTokenService, SecureTokenGenerator, Mailer), pagination, use-case
+    application/        ports (Clock, IdGenerator, TransactionManager, AuthTokenService, SecureTokenGenerator, PasswordHasher, Mailer), pagination, use-case
     infra/              database (PrismaDatabase + transação via AsyncLocalStorage), http, security, mail, system, in-memory (dublês)
     motor/              GERADO a partir do frontend. Não edite.
   modules/<modulo>/
@@ -93,7 +93,7 @@ O perfil ganhou renda informada, salário bruto, dependentes, competência da ta
 - Recurso de outra pessoa responde `NotFoundError` (igual a inexistente — não confirma que o id existe).
 - Escrita em mais de um repositório → `transactions.run(async () => { ... })`.
 - **Dentro de `run`, nunca capture erro de banco e siga**: no Postgres, depois de qualquer erro a transação fica abortada (25P02) e toda consulta seguinte falha — a memória não mostra isso. Pra tentar de novo (ex.: versão concorrente), repita o `run` inteiro.
-- "Uso único" e "não duplicar sob concorrência" não se garantem com ler-e-depois-gravar: use o método compare-and-set do repositório (`saveMagicLinkConsumption`, `claimSend`) ou a constraint do banco.
+- "Uso único" e "não duplicar sob concorrência" não se garantem com ler-e-depois-gravar: use o método compare-and-set do repositório (`saveMagicLinkConsumption`, `savePasswordReset`, `claimSend`) ou a constraint do banco.
 - Lançam `AppError` (`ValidationError` 400, `UnauthorizedError` 401, `ForbiddenError` 403, `NotFoundError` 404, `ConflictError` 409, `BusinessRuleError` 422). Mensagem em pt-BR pronta pra tela; `details` por campo quando fizer sentido.
 - Não mutam a entidade antes de terminar as checagens que podem falhar.
 
@@ -133,11 +133,34 @@ O perfil ganhou renda informada, salário bruto, dependentes, competência da ta
 
 `src/shared/motor/` é cópia de `dindinFrontend/src/domain` + `src/lib/format.ts`, gerada por `yarn motor:sync` (com os testes). É o que permite gerar o plano no servidor sem confiar no cliente. **Não edite aqui**: mude no frontend e sincronize. `yarn motor:check` falha se as cópias divergirem — rode no CI.
 
+## Autenticação: conta com e-mail e senha (desde 24/09/2026)
+
+A conta é grátis e opcional — o app inteiro funciona sem ela, com o plano no navegador. Ela serve pra baixar o PDF do plano (o frontend confere a sessão com um `GET /me` novo antes de liberar), salvar no servidor e receber o e-mail mensal. O login por link mágico (sem senha) saiu: `POST /auth/link-magico` responde 404.
+
+| Rota | O que faz |
+| --- | --- |
+| `POST /auth/cadastrar` `{ email, senha }` | `CadastrarComSenhaUseCase`: cria a conta com o hash, abre a sessão (201) e manda o "Confirme seu e-mail" (`/entrar#token=`, `LINK_CONFIRMACAO_HORAS`, padrão 48). Falha no envio NÃO derruba o cadastro: anula o link e segue (o router loga um aviso). E-mail que já tem conta — inclusive conta antiga, sem senha — é 409; corrida no UNIQUE também vira 409 |
+| `POST /auth/entrar` `{ email, senha }` | `EntrarComSenhaUseCase`: e-mail sem conta, senha errada e conta sem senha dão o MESMO 401 "E-mail ou senha incorretos." — e sem conta/sem senha roda um verify contra um hash "de mentira" (gerado uma vez por processo), pro tempo não revelar quem tem conta. Não exige e-mail confirmado |
+| `POST /auth/esqueci-senha` `{ email }` | `SolicitarRedefinicaoDeSenhaUseCase`: valida o e-mail (400) e responde 202 com a mesma frase **sem esperar nada**: a busca da conta, a gravação do link e o envio do "Criar uma senha nova" (`/redefinir-senha#token=`, `LINK_MAGICO_MINUTOS`, padrão 15) rodam depois da resposta (`BackgroundJobs`). Assim o tempo e o status não dizem quem tem conta (antes, com conta esperava o banco e o provedor, e provedor fora do ar virava 500 só pra quem tinha conta). Sem reenvio se o último link do endereço saiu há menos de 60 s. Envio que falhou anula o link e vai pro log da tarefa |
+| `POST /auth/redefinir-senha` `{ token, senha }` | `RedefinirSenhaUseCase`: só aceita o link de senha nova. Grava a senha, confirma o e-mail e gasta o link numa escrita só (`savePasswordReset`, compare-and-set) e devolve a sessão — as sessões de antes caem (`versaoSessao`). Senha fora da regra é 400 e NÃO gasta o link |
+| `POST /auth/verificar` `{ token }` | `VerificarLinkMagicoUseCase`: só o link do "Confirme seu e-mail" (o de senha nova aqui é 401: seria entrar sem senha). Confirma e abre sessão (`saveMagicLinkConsumption`) |
+| `POST /me/senha` `{ senhaAtual?, senhaNova }` | `TrocarSenhaUseCase`: **200 com uma sessão nova** (`{ accessToken, expiresAt, subscriber }`, `no-store`): a senha nova derruba TODAS as sessões de antes, a do pedido inclusive, e o cliente troca o token guardado por este. Senha atual errada/ausente é **400** em `details.senhaAtual`, NUNCA 401 (o front trata 401 como sessão vencida). `senhaAtual` só é dispensada na conta antiga, sem senha |
+| `GET /me` | a conta + `temSenha` (a página da conta decide entre "Trocar senha" e "Criar senha") |
+
+- **Senha**: 8 a 128 caracteres (unidades UTF-16, como o `maxLength` do navegador), só espaços não vale. Regras e mensagens em `identidade/domain/senha.ts`, IGUAIS às do frontend. **Nunca trimada nem normalizada** — só validada; o e-mail continua passando por `normalizarEmail`. No entrar, só "não vazia" e o teto de 128 (se o mínimo subir um dia, quem já tem senha continua entrando).
+- **Hash**: porta `PasswordHasher` (`shared/application/ports.ts`); em produção `ScryptPasswordHasher` (`node:crypto`, sal de 16 bytes, N=16384 r=8 p=1, 64 bytes, `scrypt$N$r$p$<sal b64>$<hash b64>`, `timingSafeEqual`, confere com os parâmetros gravados no hash). Nos testes, `PredictablePasswordHasher` (`"senha(abc)"`, instantâneo); o e2e usa o scrypt de verdade.
+- **A senha só muda por `savePassword` / `savePasswordReset`**. O `save()` de uma linha existente NÃO grava `senhaHash` nem `versaoSessao` (só no insert): um descadastro ou link novo gravado a partir de uma entidade lida antes nunca desfaz uma troca de senha feita no meio — nem devolve a validade às sessões que ela derrubou.
+- **Senha nova encerra as sessões de antes**: `Subscriber.versaoSessao` (coluna `versao_sessao`, default 0) sobe a cada `definirSenha` (redefinir, trocar, primeira senha da conta antiga) e vai no JWT como `ver`. `requireAuth`/`optionalAuth` perguntam ao `SessionAccounts.sessionVersion(id)` (uma busca por chave primária): conta excluída (`null`) ou versão diferente → 401. Token sem `ver` (emitido antes da regra) conta como 0. Fecha o caso "alguém criou a conta com o meu e-mail e ficou com a sessão de 30 dias": a dona usa o Esqueci a senha e a sessão da intrusa cai. O cadastro nasce na versão 0 (não passa por `definirSenha`).
+- **Nunca sai**: presenter, sessão, exportação LGPD (`GET /me/exportar`) e log não levam hash nem senha — só `temSenha` no `/me`. O e2e e o contrato da privacidade conferem.
+- **Links por e-mail** (`application/links-por-email.ts`, `EmissorDeLinks`): UM link pendente por vez na coluna `token` (o token só existe no e-mail). Confirmação e senha nova dividem a coluna (um substitui o outro), mas **cada link só serve pra sua finalidade**: a coluna guarda `chaveDoLink` = `"<finalidade>:<sha256>"` (`confirmacao:` ou `redefinicao:`) e cada rota procura só pela sua — o de confirmação (48 h) não cria senha e o de senha nova não abre sessão sem trocar a senha. Como a finalidade está no próprio valor, o compare-and-set do consumo já confere as duas coisas. O de senha nova também confirma o e-mail. Uso único; expira. O limite de 60 s por endereço deduz a emissão pela validade, testando as duas.
+- **Tokens vão no fragmento da URL, nunca na query**: `${APP_URL}/entrar#token=…`, `${APP_URL}/redefinir-senha#token=…`, `${APP_URL}/descadastrar#token=…`. O fragmento não chega em servidor, log, `Referer` nem script de anúncio/analytics.
+- **Limite por IP** (`LIMITES_POR_IP` em `identidade.routes.ts`), um contador por rota, a cada 15 min: cadastrar 10, entrar 10, esqueci-senha 5, redefinir-senha 20, verificar 20, `/me/senha` 10 (depois do `requireAuth`), descadastrar 20.
+- **Tarefas em segundo plano** (`BackgroundJobs`, `shared/infra/background-jobs.ts`): no próprio processo, sem fila nem retentativa; o trabalho começa num `setImmediate` (depois de a resposta sair), falha vai pro log. `container.close()` espera as pendentes antes de fechar o banco; os testes chamam `idle()` antes de olhar o e-mail (o e2e faz isso a cada chamada).
+
 ## Produto (não negociável)
 
-- Sem senha: login por link mágico. O token só existe no e-mail; o banco guarda o SHA-256. Link é de uso único (compare-and-set) e expira.
-- **Tokens vão no fragmento da URL, nunca na query**: `${APP_URL}/entrar#token=…`, `${APP_URL}/descadastrar#token=…`. O fragmento não chega em servidor, log, `Referer` nem script de anúncio/analytics.
-- Pedido de link: resposta sempre 202 (não revela se o e-mail existe) e sem reenvio se o último link do endereço saiu há menos de 60 s (`Subscriber.linkEmitidoEm`) — além do rate limit por IP.
+- Conta com e-mail e senha (ver "Autenticação" acima). A senha só existe como hash scrypt; o token dos links só existe no e-mail e o banco guarda o SHA-256. Link é de uso único (compare-and-set) e expira.
+- Respostas que não revelam quem tem conta: esqueci-senha é sempre 202 com a mesma frase; entrar dá o mesmo 401 (e o mesmo tempo) pra e-mail sem conta, senha errada e conta sem senha. O cadastro é a exceção aceita pelo produto (409 "Já existe uma conta com esse e-mail…").
 - E-mail mensal só pra quem confirmou o endereço (`emailVerificadoEm`) e está `ativo`. O job reserva o envio com `claimSend` antes de mandar e desfaz com `releaseSendClaim` se falhar: execuções sobrepostas não duplicam e-mail.
 - LGPD: exportar e excluir tudo (módulo `privacidade`). Exclusão é física, não flag, numa transação, apagando na ordem das FKs: gastos fixos → dívidas → perfil → categorias personalizadas → planos, metas, check-ins → subscriber.
 - Nunca recomendar produto, banco, corretora ou emissor em nenhum texto.
@@ -146,5 +169,6 @@ O perfil ganhou renda informada, salário bruto, dependentes, competência da ta
 ## Banco
 
 - Migrations em `prisma/migrations`, SQL escrito/revisado à mão quando há rename (Prisma gera DROP+ADD).
+- Migration nova no código = `yarn prisma:deploy` (`prisma migrate deploy`) no banco ANTES de usar a API: o Prisma lê todas as colunas do model, então coluna faltando (ex.: `senha_hash`, de `20260924000000_senha`, e `versao_sessao`, de `20260924010000_versao_da_sessao`) derruba com 500 toda rota que lê a conta, inclusive o middleware de sessão. `/api/health/ready` continua ok nesse caso.
 - O catálogo de categorias é semeado na migration e reaplicável com `yarn db:seed` (lê do motor).
 - `.env` do usuário tem a senha do Postgres local como placeholder: não tente adivinhar. Sem banco, use `PERSISTENCIA=memoria`.

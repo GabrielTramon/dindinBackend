@@ -14,27 +14,33 @@ const booleano = z
 const schema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
-    PORT: z.coerce.number().int().min(1).max(65535).default(3333),
+    PORT: z.coerce.number().int().min(1).max(65535).default(3701),
 
     /** prisma = Postgres; memoria = tudo na RAM, some ao reiniciar (desenvolvimento e demo) */
     PERSISTENCIA: z.enum(['prisma', 'memoria']).default('prisma'),
     DATABASE_URL: z.string().optional(),
 
     /** origens separadas por vírgula; "*" só fora de produção */
-    CORS_ORIGIN: z.string().default('http://localhost:3000'),
+    CORS_ORIGIN: z.string().default('http://localhost:3700'),
     /** saltos de proxy confiáveis (0 = sem proxy); afeta req.ip e o rate limit */
     TRUST_PROXY: z.coerce.number().int().min(0).max(10).default(0),
     LOG_REQUESTS: booleano.default(true),
     /**
-     * Limite por IP nas rotas que mandam e-mail ou conferem token. Sem valor: ligado,
-     * menos com NODE_ENV=test (a suíte faz dezenas de pedidos do mesmo IP).
+     * Limite por IP nas rotas que mandam e-mail, conferem senha ou conferem token. Sem
+     * valor: ligado, menos com NODE_ENV=test (a suíte faz dezenas de pedidos do mesmo IP).
      */
     RATE_LIMIT: booleano.optional(),
 
     // obrigatoriedade e tamanho checados no superRefine: assim um boot quebrado lista TODOS os problemas
     JWT_SECRET: z.string().optional(),
     SESSAO_DIAS: z.coerce.number().int().min(1).max(365).default(30),
+    /**
+     * validade do link "Criar uma senha nova" (Esqueci a senha). O nome é do tempo do
+     * link mágico e ficou, pra não quebrar o .env de ninguém.
+     */
     LINK_MAGICO_MINUTOS: z.coerce.number().int().min(5).max(1440).default(15),
+    /** validade do link "Confirme seu e-mail", mandado no cadastro */
+    LINK_CONFIRMACAO_HORAS: z.coerce.number().int().min(1).max(168).default(48),
     /** sem reenvio de link pro mesmo e-mail antes disso (regra do produto: 60 s) */
     LINK_REENVIO_SEGUNDOS: z.coerce
       .number()
@@ -44,7 +50,7 @@ const schema = z
       .default(INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS),
 
     /** onde o frontend roda: base dos links que vão nos e-mails */
-    APP_URL: z.url({ error: 'APP_URL precisa ser uma URL' }).default('http://localhost:3000'),
+    APP_URL: z.url({ error: 'APP_URL precisa ser uma URL' }).default('http://localhost:3700'),
 
     EMAIL_PROVEDOR: z.enum(['console', 'resend']).default('console'),
     EMAIL_REMETENTE: z.string().default('dindin <nao-responda@dindin.app>'),
@@ -69,11 +75,11 @@ const schema = z
       if (env.PERSISTENCIA === 'memoria') problema('PERSISTENCIA', 'memoria não é permitida em produção');
       if (env.EMAIL_PROVEDOR === 'console') problema('EMAIL_PROVEDOR', 'console não envia e-mail de verdade');
       if (env.CORS_ORIGIN.split(',').some((o) => o.trim() === '*')) problema('CORS_ORIGIN', '"*" não é permitido em produção');
-      // o intervalo por endereço é o que impede usar o link mágico pra lotar a caixa de alguém trocando de IP
+      // o intervalo por endereço é o que impede usar o Esqueci a senha pra lotar a caixa de alguém trocando de IP
       if (env.LINK_REENVIO_SEGUNDOS < INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS) {
         problema('LINK_REENVIO_SEGUNDOS', `precisa ser pelo menos ${INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS} em produção`);
       }
-      // os links de login vão por e-mail com essa base: http ou localhost mandaria gente pra lugar errado
+      // os links (confirmar e-mail, senha nova) vão por e-mail com essa base: http ou localhost mandaria gente pra lugar errado
       try {
         const url = new URL(env.APP_URL);
         if (url.protocol !== 'https:') problema('APP_URL', 'precisa ser https em produção');
@@ -92,11 +98,14 @@ export interface AppConfig {
   corsOrigins: string[] | '*';
   trustProxy: number;
   logRequests: boolean;
-  /** limite por IP em POST /auth/link-magico, /auth/verificar e /descadastrar */
+  /** limite por IP em POST /auth/*, /me/senha e /descadastrar */
   rateLimitEnabled: boolean;
   jwtSecret: string;
   sessionTtlSeconds: number;
-  magicLinkTtlMinutes: number;
+  /** validade do link "Criar uma senha nova" (LINK_MAGICO_MINUTOS) */
+  resetLinkTtlMinutes: number;
+  /** validade do link "Confirme seu e-mail" (LINK_CONFIRMACAO_HORAS) */
+  confirmationLinkTtlHours: number;
   /** intervalo mínimo entre dois links pro mesmo e-mail */
   linkResendCooldownSeconds: number;
   appUrl: string;
@@ -123,7 +132,8 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     rateLimitEnabled: e.RATE_LIMIT ?? e.NODE_ENV !== 'test',
     jwtSecret: e.JWT_SECRET ?? '',
     sessionTtlSeconds: e.SESSAO_DIAS * 24 * 60 * 60,
-    magicLinkTtlMinutes: e.LINK_MAGICO_MINUTOS,
+    resetLinkTtlMinutes: e.LINK_MAGICO_MINUTOS,
+    confirmationLinkTtlHours: e.LINK_CONFIRMACAO_HORAS,
     linkResendCooldownSeconds: e.LINK_REENVIO_SEGUNDOS,
     appUrl: e.APP_URL.replace(/\/+$/, ''),
     mail: { provider: e.EMAIL_PROVEDOR, from: e.EMAIL_REMETENTE, resendApiKey: e.RESEND_API_KEY },
