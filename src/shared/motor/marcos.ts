@@ -5,6 +5,7 @@
 
 import { MAX_RENDIMENTO_MENSAL, MESES_SIMULACAO_MAX } from "./config";
 import { rotuloMeta } from "./metas-catalogo";
+import { metaComGuardadoEfetivo, saldosIniciaisDaMeta } from "./guardado-meta";
 import { gerarPlano } from "./motor";
 import { mesEmTexto, type Grupo, type ProjecaoMeta } from "./organizacao";
 import type { DividaAvaliada, Meta, Plano, TipoDivida } from "./types";
@@ -105,17 +106,28 @@ function mesesAteOAlvo(
   inicio: number,
   valorAlvo: number,
   taxaPlano = 0,
+  iniciais: { valor: number; taxa: number }[] = [],
 ): number | null {
   if (valorAlvo <= 0) return 0;
-  if (!grupos.some((c) => c.valor > 0) && doPlano <= 0) return null;
+  // o que já estava guardado pra meta pode bastar sozinho: meta paga no mês 0
+  if (arredondar(iniciais.reduce((acc, s) => acc + s.valor, 0)) >= valorAlvo) return 0;
+  if (!grupos.some((c) => c.valor > 0) && doPlano <= 0 && !iniciais.some((s) => s.valor > 0 && s.taxa > 0)) {
+    return null;
+  }
 
   const saldos = grupos.map(() => 0);
+  const estoque = iniciais.map((s) => s.valor);
   let saldoPlano = 0;
   for (let mes = 1; mes <= MESES_SIMULACAO_MAX; mes++) {
     let total = 0;
     for (let i = 0; i < saldos.length; i++) {
       saldos[i] = saldos[i] * (1 + grupos[i].taxa) + grupos[i].valor;
       total += saldos[i];
+    }
+    // o estoque rende desde o mês 1, esteja a cascata onde estiver
+    for (let i = 0; i < estoque.length; i++) {
+      estoque[i] = estoque[i] * (1 + iniciais[i].taxa);
+      total += estoque[i];
     }
     if (doPlano > 0) {
       saldoPlano = (taxaPlano > 0 ? saldoPlano * (1 + taxaPlano) : saldoPlano) + (mes > inicio ? doPlano : 0);
@@ -157,12 +169,15 @@ export function projetarMetaNoCaminho(
   const aporteMensal = arredondar(somaGrupos + doPlano);
   const valorAlvo = arredondar(Number.isFinite(meta.valorAlvo) ? meta.valorAlvo : 0);
 
-  const meses = mesesAteOAlvo(contribuicoes, doPlano, comeco, valorAlvo, taxaPlano);
+  const iniciais = saldosIniciaisDaMeta(meta);
+  const meses = mesesAteOAlvo(contribuicoes, doPlano, comeco, valorAlvo, taxaPlano, iniciais);
   const semRendimento = mesesAteOAlvo(
     contribuicoes.map((c) => ({ valor: c.valor, taxa: 0 })),
     doPlano,
     comeco,
     valorAlvo,
+    0,
+    iniciais.map((s) => ({ valor: s.valor, taxa: 0 })),
   );
 
   return {
@@ -171,6 +186,7 @@ export function projetarMetaNoCaminho(
     meses,
     mesEstimado: meses === null ? null : mesEstimado(hoje, meses),
     semRendimento,
+    jaGuardado: arredondar(iniciais.reduce((acc, s) => acc + s.valor, 0)),
   };
 }
 
@@ -195,7 +211,8 @@ export function aportePrevistoNasMetas(plano: Plano, grupos: Grupo[] = []): numb
   const depois = gerarPlano({
     ...plano.perfil,
     dividas: plano.dividas.baratas,
-    guardado: Math.max(plano.perfil.guardado, plano.reserva.alvo),
+    // reserva cheia DEPOIS de tirar a parte que já está na meta
+    guardado: Math.max(plano.perfil.guardado, plano.reserva.alvo + plano.guardadoNaMeta),
   });
   return depois.degrau === 4 && !depois.modoCorte ? depois.aporte : 0;
 }
@@ -290,7 +307,9 @@ export interface CaminhoDoPlano {
 export function caminhoDoPlano(plano: Plano, opcoes: OpcoesMarcos): CaminhoDoPlano {
   if (plano.modoCorte) return { marcos: [], meta: null };
   const { hoje } = opcoes;
-  const meta = opcoes.meta ?? plano.perfil.meta;
+  const metaBruta = opcoes.meta ?? plano.perfil.meta;
+  // os potes do que já está guardado nunca passam do guardado do perfil
+  const meta = metaBruta && metaComGuardadoEfetivo(metaBruta, plano.perfil.guardado);
   const grupos = opcoes.grupos ?? [];
   const { folego, reserva, dividas, degrau } = plano;
 
@@ -333,8 +352,21 @@ export function caminhoDoPlano(plano: Plano, opcoes: OpcoesMarcos): CaminhoDoPla
       inicio: inicioMeta,
       aporteDoPlano: inicioMeta === null ? 0 : aportePrevistoNasMetas(plano, grupos),
     };
-    brutos.push({ id: "meta", rotulo: rotuloMeta(meta), meses: projecao.meses });
+    // meta que o já guardado paga sozinho não é passo pendente: vira um marco feito, lá embaixo
+    if (projecao.meses !== 0) brutos.push({ id: "meta", rotulo: rotuloMeta(meta), meses: projecao.meses });
   }
+  const metaPronta: Marco | null =
+    meta && metaNoCaminho?.projecao.meses === 0
+      ? {
+          id: "meta",
+          rotulo: `${rotuloMeta(meta)} já garantida`,
+          meses: 0,
+          mes: null,
+          mesExtenso: null,
+          estado: "feito",
+          semPrazo: false,
+        }
+      : null;
 
   /*
     Um marco depois do travado depende dele — menos a meta que os potes
@@ -386,12 +418,14 @@ export function caminhoDoPlano(plano: Plano, opcoes: OpcoesMarcos): CaminhoDoPla
     semPrazo,
   }));
 
-  if (pendentes.length >= 2 || degrau === 0) return { marcos: pendentes, meta: metaNoCaminho };
+  // a meta que o já guardado paga sozinho entra como feita, antes dos passos de agora
+  const lista = metaPronta ? [metaPronta, ...pendentes] : pendentes;
+  if (lista.length >= 2 || degrau === 0) return { marcos: lista, meta: metaNoCaminho };
 
   // o último degrau já resolvido: no 1 e no 2 é o fôlego; do 3 em diante, a reserva
   const feito: Marco =
     degrau <= 2
       ? { id: "folego", rotulo: "Fôlego pronto", meses: 0, mes: null, mesExtenso: null, estado: "feito", semPrazo: false }
       : { id: "reserva", rotulo: "Reserva completa", meses: 0, mes: null, mesExtenso: null, estado: "feito", semPrazo: false };
-  return { marcos: [feito, ...pendentes], meta: metaNoCaminho };
+  return { marcos: [feito, ...lista], meta: metaNoCaminho };
 }

@@ -99,6 +99,9 @@ export const MAIORES_GASTOS_NO_CORTE = 3;
 export const MAX_GRUPOS = 6;
 export const MAX_ITENS_POR_GRUPO = 5;
 
+/** Potes do que já está guardado pra meta (CDB, poupança…). */
+export const MAX_GUARDADOS_NA_META = 4;
+
 /** Rendimento mensal que a pessoa pode declarar num grupo: até 5% a.m. */
 export const MAX_RENDIMENTO_MENSAL = 0.05;
 

@@ -36,7 +36,8 @@ export const salvarPerfilBody = z.object({
   competenciaTabela: competenciaTabela.optional(),
   ritmo: ritmo.optional(),
   aporteEscolhido: commonSchemas.moneyOrZero.optional(),
-  // o mesmo objeto do onboarding; "outro" sem nome já é recusado aqui
+  // o mesmo objeto do onboarding (metaSchema do motor): "outro" sem nome já é recusado aqui, e os
+  // potes de meta.guardados (até 4, valor e rendimento nos limites do motor) vêm dentro dele
   meta: metaSchema.optional(),
   tipoRenda,
   idade,
@@ -55,6 +56,7 @@ export const atualizarPerfilBody = z
     competenciaTabela: competenciaTabela.optional(),
     ritmo: ritmo.optional(),
     aporteEscolhido: commonSchemas.moneyOrZero.optional(),
+    // troca a meta INTEIRA, potes inclusive: meta sem `guardados` fica sem potes
     meta: metaSchema.optional(),
     tipoRenda: tipoRenda.optional(),
     idade: idade.optional(),

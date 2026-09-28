@@ -152,6 +152,12 @@ model Profile {
   /// obrigatório quando o tipo é "outro"
   metaNome      String?   @map("meta_nome")
   metaValorAlvo Decimal?  @map("meta_valor_alvo") @db.Decimal(12, 2)
+  /// a parte do que a pessoa JÁ tem guardado que ela pôs na meta, em potes:
+  /// [{ id, nome, valor, rendimentoMensal? }] (Meta.guardados do motor). Nulo =
+  /// não respondeu; [] = "não, é a minha reserva". Vai e volta com a meta: sem
+  /// meta, é nulo. JSON (e não tabela) porque são até 4 potes que só existem
+  /// dentro da meta e viajam inteiros com o perfil do motor.
+  metaGuardados Json?     @map("meta_guardados")
 
   /// CLT → reserva de 3 meses; PJ e INFORMAL → 6
   tipoRenda    TipoRenda @map("tipo_renda")

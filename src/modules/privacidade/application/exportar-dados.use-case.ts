@@ -9,12 +9,27 @@ import type { GastosFixosRepository } from '../../gastos-fixos';
 import type { SubscribersRepository } from '../../identidade';
 import type { MetasRepository } from '../../metas';
 import type { GruposRepository } from '../../organizacao';
-import type { PerfisRepository } from '../../perfil';
+import type { DadosPerfil, PerfisRepository } from '../../perfil';
 import type { VersoesPlanoRepository } from '../../planos';
-import type { DadosExportados } from './dados-exportados';
+import type { ComMetaExportada, DadosExportados } from './dados-exportados';
 
 export interface ExportarDadosInput {
   subscriberId: string;
+}
+
+/*
+  Tira o id dos potes da meta (meta.guardados) e mantém todo o resto — do
+  pote, da meta e de quem a carrega — pelo spread: campo novo entra no arquivo
+  sozinho. `meta` é sobrescrita no lugar (a chave já existe), então a ordem das
+  chaves do arquivo não muda. Sem potes, devolve o objeto como veio.
+*/
+function semIdDosPotes<T extends { meta?: DadosPerfil['meta'] }>(dados: T): ComMetaExportada<T> {
+  const meta = dados.meta;
+  if (meta?.guardados === undefined) return dados as ComMetaExportada<T>;
+  return {
+    ...dados,
+    meta: { ...meta, guardados: meta.guardados.map(({ id: _id, ...pote }) => pote) },
+  } as ComMetaExportada<T>;
 }
 
 /**
@@ -81,9 +96,10 @@ export class ExportarDadosUseCase implements UseCase<ExportarDadosInput, DadosEx
         (perfil-do-motor.ts) e ele OMITE a chave opcional ausente. Campo novo do
         perfil (ritmo, meta, salário bruto…) entra na exportação sozinho —
         esquecer um deles aqui era exatamente o bug silencioso do checklist:
-        exportação LGPD incompleta e nenhum teste vermelho.
+        exportação LGPD incompleta e nenhum teste vermelho. Só o id dos potes da
+        meta fica de fora (semIdDosPotes).
       */
-      perfil: perfil === null ? null : { ...perfil.toDados(), atualizadoEm: perfil.atualizadoEm },
+      perfil: perfil === null ? null : { ...semIdDosPotes(perfil.toDados()), atualizadoEm: perfil.atualizadoEm },
       gastosFixos: gastos.map((gasto) => {
         const categoria = nomeDaCategoria.get(gasto.categoriaId);
         // a FK garante a categoria de um gasto gravado, e as visíveis cobrem catálogo + próprias: faltar é defeito
@@ -105,8 +121,9 @@ export class ExportarDadosUseCase implements UseCase<ExportarDadosInput, DadosEx
       planos: versoes.map((v) => ({
         versao: v.versao,
         criadoEm: v.criadoEm,
-        entrada: v.inputSnap,
-        resultado: v.resultado,
+        // a meta aparece aqui duas vezes (a entrada e o perfil dentro do plano): o id dos potes sai das duas
+        entrada: semIdDosPotes(v.inputSnap),
+        resultado: { ...v.resultado, perfil: semIdDosPotes(v.resultado.perfil) },
       })),
       metas: metas.map((m) => ({
         nome: m.nome,

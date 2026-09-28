@@ -1,13 +1,22 @@
-import type {
-  MetaTipo as MetaTipoDb,
-  Moradia as MoradiaDb,
-  Profile as ProfileRow,
-  RendaInformada as RendaInformadaDb,
-  Ritmo as RitmoDb,
-  TipoRenda as TipoRendaDb,
+import {
+  Prisma,
+  type MetaTipo as MetaTipoDb,
+  type Moradia as MoradiaDb,
+  type Profile as ProfileRow,
+  type RendaInformada as RendaInformadaDb,
+  type Ritmo as RitmoDb,
+  type TipoRenda as TipoRendaDb,
 } from '../../../../generated/prisma/client';
 import { decimalToNumber, numberToDecimal } from '../../../../shared/infra/database/decimal';
-import type { Meta, MetaTipo, Moradia, RendaInformada, Ritmo, TipoRenda } from '../../../../shared/motor/types';
+import type {
+  GuardadoNaMeta,
+  Meta,
+  MetaTipo,
+  Moradia,
+  RendaInformada,
+  Ritmo,
+  TipoRenda,
+} from '../../../../shared/motor/types';
 import { Perfil } from '../../domain/perfil';
 
 /*
@@ -62,17 +71,51 @@ export function metaTipoToDb(tipo: MetaTipo): MetaTipoDb {
 }
 
 /*
-  A meta mora em três colunas do perfil (meta_tipo, meta_nome, meta_valor_alvo)
-  e vira UM objeto no domínio e na API. As três são gravadas juntas: tipo ou
-  valor faltando é linha pela metade — defeito, não meta. Ignorar em vez de
-  explodir mantém o GET do perfil inteiro funcionando pra pessoa.
+  Os potes da meta (meta_guardados, JSONB) ⇄ Meta.guardados. Na volta, cada pote
+  é remontado campo a campo, na ordem do tipo do motor: o JSONB reordena as
+  chaves e devolveria qualquer campo que alguém tivesse posto ali. Como todo
+  restaurar, não revalida — o que entrou saiu de Perfil.criar. Coluna que não é
+  lista é defeito: vira "não respondeu" em vez de derrubar o GET do perfil.
+*/
+function guardadosToDomain(json: Prisma.JsonValue | null): GuardadoNaMeta[] | undefined {
+  if (!Array.isArray(json)) return undefined;
+  return json.map((item) => {
+    const pote = item as Record<string, unknown>;
+    return {
+      id: pote.id as string,
+      nome: pote.nome as string,
+      valor: pote.valor as number,
+      ...(typeof pote.rendimentoMensal === 'number' ? { rendimentoMensal: pote.rendimentoMensal } : {}),
+    };
+  });
+}
+
+function guardadosToDb(guardados: GuardadoNaMeta[] | undefined): Prisma.InputJsonValue | typeof Prisma.DbNull {
+  // DbNull (NULL na coluna), não JsonNull (o valor JSON `null`): "não respondeu" é coluna vazia
+  if (guardados === undefined) return Prisma.DbNull;
+  return guardados.map((pote) => ({
+    id: pote.id,
+    nome: pote.nome,
+    valor: pote.valor,
+    ...(pote.rendimentoMensal !== undefined ? { rendimentoMensal: pote.rendimentoMensal } : {}),
+  }));
+}
+
+/*
+  A meta mora em quatro colunas do perfil (meta_tipo, meta_nome, meta_valor_alvo
+  e meta_guardados) e vira UM objeto no domínio e na API. São gravadas juntas:
+  tipo ou valor faltando é linha pela metade — defeito, não meta. Ignorar em vez
+  de explodir mantém o GET do perfil inteiro funcionando pra pessoa. Sem meta,
+  potes que sobrassem na coluna também são ignorados: vivem dentro da meta.
 */
 function metaToDomain(row: ProfileRow): Meta | undefined {
   if (row.metaTipo === null || row.metaValorAlvo === null) return undefined;
+  const guardados = guardadosToDomain(row.metaGuardados);
   return {
     tipo: metaTipoToDomain(row.metaTipo),
     ...(row.metaNome !== null ? { nome: row.metaNome } : {}),
     valorAlvo: decimalToNumber(row.metaValorAlvo),
+    ...(guardados !== undefined ? { guardados } : {}),
   };
 }
 
@@ -114,6 +157,8 @@ export function toPersistence(perfil: Perfil) {
     metaTipo: meta !== undefined ? metaTipoToDb(meta.tipo) : null,
     metaNome: meta?.nome ?? null,
     metaValorAlvo: meta !== undefined ? numberToDecimal(meta.valorAlvo) : null,
+    // sem meta, sem potes: trocar ou tirar a meta leva os guardados junto
+    metaGuardados: guardadosToDb(meta?.guardados),
     tipoRenda: tipoRendaToDb(p.tipoRenda),
     idade: p.idade,
     moradia: moradiaToDb(p.moradia),

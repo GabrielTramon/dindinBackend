@@ -63,6 +63,7 @@ export const PASSOS_DO_FLUXO = [
   'salário bruto, dependentes, ritmo e meta atravessam o perfil e chegam no plano',
   'plano novo não reescreve o passado: o check-in de agosto continua igual',
   'PUT /organizacao guarda a árvore de grupos, e o PUT seguinte substitui ela inteira',
+  'o que a Ana já tem guardado entra na meta, em potes: volta igual e o plano tira isso do fôlego e da reserva',
   'job do dia 1 abre setembro e manda o e-mail com descadastro no fragmento; rodar de novo não duplica',
   'descadastro pelo link do e-mail: sessão não serve como token; o do e-mail vale e é idempotente',
   'GET /me/exportar traz tudo da Ana e nada do Bruno',
@@ -1109,6 +1110,63 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect((await api.chamar('ana', 'get', '/organizacao', { sessao: ana.sessao, status: 200 })).body).toEqual(menor);
   });
 
+  await passo('o que a Ana já tem guardado entra na meta, em potes: volta igual e o plano tira isso do fôlego e da reserva', async () => {
+    /*
+      Os potes (meta.guardados) moram DENTRO da meta, na coluna JSONB
+      meta_guardados do perfil. O passo atravessa a malha inteira — schema do
+      PATCH, entidade, mapper, presenter, GET /perfil/completo (o corpo do
+      próximo PUT) e o inputSnap da versão nova — e prova que o plano da API
+      USA os potes: o mesmo real não é reserva e meta ao mesmo tempo.
+    */
+    const antes = await api.chamar('ana', 'get', '/planos/atual', { sessao: ana.sessao, status: 200 });
+    expect(antes.body.resultado.guardadoNaMeta).toBe(0);
+    const guardado = antes.body.entrada.guardado as number;
+
+    const meta = {
+      tipo: 'carro',
+      valorAlvo: 45000,
+      guardados: [
+        { id: 'pote-cdb', nome: 'CDB', valor: 1200, rendimentoMensal: 0.0085 },
+        { id: 'pote-poupanca', nome: 'Poupança', valor: 300.5 },
+      ],
+    };
+    const noPotes = 1500.5;
+    expect(noPotes).toBeLessThan(guardado);
+
+    const salvo = await api.chamar('ana', 'patch', '/perfil', { sessao: ana.sessao, corpo: { meta }, status: 200 });
+    expect(salvo.body.meta).toEqual(meta);
+    const completo = await api.chamar('ana', 'get', '/perfil/completo', { sessao: ana.sessao, status: 200 });
+    expect(completo.body.meta).toEqual(meta);
+    // o PATCH mexeu só na meta: o aporte escolhido (e o resto) continua, e agora volta no perfil completo também
+    expect(completo.body).toEqual({ ...(antes.body.entrada as object), meta });
+    // o GET é o corpo do próximo PUT: mandar de volta não muda nada
+    const regravado = await api.chamar('ana', 'put', '/perfil/completo', { sessao: ana.sessao, corpo: completo.body, status: 200 });
+    expect(regravado.body).toEqual(completo.body);
+
+    const v5 = await api.chamar('ana', 'post', '/planos', { sessao: ana.sessao, status: 201 });
+    expect(v5.headers.location).toBe('/api/v1/planos/5');
+    expect(v5.body.entrada).toEqual(completo.body);
+    expect(v5.body.resultado.guardadoNaMeta).toBe(noPotes);
+    // fôlego e reserva contam só o que NÃO foi pra meta
+    const livre = arredondar(guardado - noPotes);
+    const { folego, reserva } = v5.body.resultado;
+    expect(folego.atual).toBe(arredondar(Math.min(livre, folego.alvo)));
+    expect(reserva.atual).toBe(arredondar(Math.min(livre, reserva.alvo)));
+    expect(reserva.falta).toBe(arredondar(Math.max(0, reserva.alvo - livre)));
+    // o mesmo perfil sem os potes (pela calculadora, que não grava) conta o guardado inteiro
+    const semPotes = await api.chamar('anonimo', 'post', '/planos/simular', {
+      corpo: { ...completo.body, meta: { tipo: 'carro', valorAlvo: 45000 } },
+      status: 200,
+    });
+    expect(semPotes.body.resultado.guardadoNaMeta).toBe(0);
+    expect(semPotes.body.resultado.reserva.atual).toBe(arredondar(Math.min(guardado, reserva.alvo)));
+    expect(semPotes.body.resultado.reserva.atual).toBeGreaterThan(reserva.atual);
+
+    // sem mudança, sem versão nova: a entrada relida (JSONB reordena as chaves dos potes) compara igual
+    const mesma = await api.chamar('ana', 'post', '/planos', { sessao: ana.sessao, status: 200 });
+    expect(mesma.body.versao).toBe(5);
+  });
+
   await passo('job do dia 1 abre setembro e manda o e-mail com descadastro no fragmento; rodar de novo não duplica', async () => {
     // 00:30 do dia 1 em São Paulo
     clock.set('2026-10-01T03:30:00.000Z');
@@ -1168,8 +1226,23 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
       dependentes: 1,
       competenciaTabela: '2026-01',
       ritmo: 'acelerado',
-      meta: { tipo: 'carro', valorAlvo: 45000 },
     });
+    // os potes da meta entram no arquivo, sem o id (chave que veio do cliente, como a dos grupos) —
+    // no perfil e em todo lugar onde a meta aparece: a entrada e o resultado da versão 5
+    const metaNoArquivo = {
+      tipo: 'carro',
+      valorAlvo: 45000,
+      guardados: [
+        { nome: 'CDB', valor: 1200, rendimentoMensal: 0.0085 },
+        { nome: 'Poupança', valor: 300.5 },
+      ],
+    };
+    expect(dados.perfil.meta).toEqual(metaNoArquivo);
+    const v5 = dados.planos.find((p: { versao: number }) => p.versao === 5);
+    expect(v5.entrada.meta).toEqual(metaNoArquivo);
+    expect(v5.resultado.perfil.meta).toEqual(metaNoArquivo);
+    expect(v5.resultado.guardadoNaMeta).toBe(1500.5);
+    expect(res.text).not.toContain('pote-cdb');
     expect(dados.gastosFixos.map((g: { categoria: string; valor: number }) => [g.categoria, g.valor]).sort()).toEqual(
       [
         ['Academia', 119.9],
@@ -1186,7 +1259,7 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
         ['rotativo', 1800],
       ].sort(),
     );
-    expect(dados.planos.map((p: { versao: number }) => p.versao).sort()).toEqual([1, 2, 3, 4]);
+    expect(dados.planos.map((p: { versao: number }) => p.versao).sort()).toEqual([1, 2, 3, 4, 5]);
     expect(dados.planos.find((p: { versao: number }) => p.versao === 2).entrada).toEqual(perfilAtual);
     expect(dados.planos.find((p: { versao: number }) => p.versao === 3).entrada).toEqual(perfilComRitmo);
     expect(dados.metas).toEqual([

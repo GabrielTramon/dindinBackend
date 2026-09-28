@@ -225,7 +225,7 @@ export function describeSincronizarPerfilCompletoContract(nome: string, setup: (
       entidade → banco → GET. Todos são opcionais, então um esquecimento em
       qualquer uma das listas campo a campo passa na compilação e some aqui.
     */
-    it('ritmo, meta e renda bruta atravessam o PUT e voltam idênticos no GET', async () => {
+    it('ritmo, meta (com os potes) e renda bruta atravessam o PUT e voltam idênticos no GET', async () => {
       const sub = await h.criarSubscriber();
       const entrada = com({
         rendaInformada: 'bruta',
@@ -234,7 +234,15 @@ export function describeSincronizarPerfilCompletoContract(nome: string, setup: (
         competenciaTabela: '2026-01',
         ritmo: 'acelerado',
         aporteEscolhido: 812.34,
-        meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+        meta: {
+          tipo: 'outro',
+          nome: 'Notebook novo',
+          valorAlvo: 5400.99,
+          guardados: [
+            { id: 'pote-cdb', nome: 'CDB', valor: 1500.75, rendimentoMensal: 0.0085 },
+            { id: 'pote-poupanca', nome: 'Poupança', valor: 200 },
+          ],
+        },
         gastosFixos: [{ categoria: 'luz', valor: 120 }],
       });
 
@@ -252,6 +260,29 @@ export function describeSincronizarPerfilCompletoContract(nome: string, setup: (
       // toStrictEqual: `{ ritmo: undefined }` passaria no toEqual e viraria "ritmo": null no JSON
       expect(devolvido).toStrictEqual(BASE);
       expect(await obter(sub)).toStrictEqual(BASE);
+    });
+
+    it('meta com guardados: [] volta []; o PUT seguinte com a meta sem guardados tira os potes', async () => {
+      const sub = await h.criarSubscriber();
+      const comVazio = com({ meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [] } });
+      expect(await sincronizar(sub, comVazio)).toStrictEqual(comVazio);
+
+      const comPote = com({ meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [{ id: 'p1', nome: 'CDB', valor: 900 }] } });
+      expect(await sincronizar(sub, comPote)).toStrictEqual(comPote);
+
+      const semPotes = com({ meta: { tipo: 'carro', valorAlvo: 45_000 } });
+      expect(await sincronizar(sub, semPotes)).toStrictEqual(semPotes);
+      expect(await obter(sub)).toStrictEqual(semPotes);
+    });
+
+    it('pote inválido → ValidationError no caminho do pote, e o perfil não nasce', async () => {
+      const sub = await h.criarSubscriber();
+      const entrada = com({ meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [{ id: 'p1', nome: 'CDB', valor: 10.005 }] } });
+
+      const erro = await sincronizar(sub, entrada).catch((e: unknown) => e);
+      expect(erro).toBeInstanceOf(ValidationError);
+      expect((erro as ValidationError).details).toEqual({ 'meta.guardados.0.valor': 'No máximo 2 casas decimais' });
+      expect(await h.perfis.exists(sub)).toBe(false);
     });
 
     it('PUT sem ritmo APAGA o ritmo gravado: o PUT substitui tudo, senão a escolha nunca se desfaz', async () => {

@@ -19,6 +19,7 @@ import {
   TAXA_LIVRE_RISCO_ANUAL,
   proporcaoAporte,
 } from "./config";
+import { guardadoNaMetaEfetivo } from "./guardado-meta";
 import { RITMOS } from "./schema";
 import { textos } from "./textos";
 import type {
@@ -257,16 +258,17 @@ function montarFolego(custoTotal: number, guardado: number): Folego {
   };
 }
 
-function montarReserva(perfil: Perfil, custoTotal: number, folegoAlvo: number): Reserva {
+/** `guardado` aqui é o que sobra do guardado depois da parte que foi pra meta. */
+function montarReserva(perfil: Perfil, custoTotal: number, folegoAlvo: number, guardado: number): Reserva {
   const multiplicador = MULTIPLICADOR_RESERVA[perfil.tipoRenda];
   const alvo = arredondar(Math.max(multiplicador * custoTotal, folegoAlvo));
   return {
     multiplicador,
     alvo,
-    atual: arredondar(Math.min(perfil.guardado, alvo)),
-    falta: arredondar(Math.max(0, alvo - perfil.guardado)),
-    ok: perfil.guardado >= alvo,
-    mesesParaCompletar: perfil.guardado >= alvo ? 0 : null,
+    atual: arredondar(Math.min(guardado, alvo)),
+    falta: arredondar(Math.max(0, alvo - guardado)),
+    ok: guardado >= alvo,
+    mesesParaCompletar: guardado >= alvo ? 0 : null,
   };
 }
 
@@ -642,8 +644,11 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
   const custoFixo = arredondar(soma(gastosFixos.map((g) => g.valor)));
 
   const resumo = montarResumo(perfil, custoFixo, parcelas);
-  const folego = montarFolego(resumo.custoTotal, perfil.guardado);
-  const reserva = montarReserva(perfil, resumo.custoTotal, folego.alvo);
+  // o que já foi separado pra meta não é reserva: o mesmo real não conta duas vezes
+  const guardadoNaMeta = guardadoNaMetaEfetivo(perfil);
+  const guardadoLivre = arredondar(Math.max(0, perfil.guardado - guardadoNaMeta));
+  const folego = montarFolego(resumo.custoTotal, guardadoLivre);
+  const reserva = montarReserva(perfil, resumo.custoTotal, folego.alvo, guardadoLivre);
   const degrau = decidirDegrau(folego, caras, reserva, medias);
   const modoCorte = resumo.excedente <= 0;
 
@@ -754,6 +759,7 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
     alocacoes,
     folego,
     reserva,
+    guardadoNaMeta,
     dividas,
     diagnosticoCaras,
     proximosPassos: textos.proximosPassos(contexto),

@@ -29,12 +29,34 @@ export type MetaTipo =
   | "estudos"
   | "outro";
 
+/**
+ * Um pote do que JÁ está guardado pra meta: quanto tem hoje e quanto rende.
+ * É estoque, não fluxo: não entra na divisão do que sobra por mês.
+ */
+export interface GuardadoNaMeta {
+  /** vem do cliente e sobrevive ao round-trip com o servidor */
+  id: string;
+  /** "Já guardado", "CDB", "Poupança" */
+  nome: string;
+  /** reais */
+  valor: number;
+  /** ao mês, 0,8% = 0.008; ausente = não rende. Digitado pela pessoa, nunca sugerido */
+  rendimentoMensal?: number;
+}
+
 /** A meta principal: uma só, escolhida no onboarding. */
 export interface Meta {
   tipo: MetaTipo;
   /** obrigatório quando o tipo é "outro" */
   nome?: string;
   valorAlvo: number;
+  /**
+   * A parte do que a pessoa JÁ tem guardado que vai pra esta meta, em potes.
+   * Ausente = ela ainda não respondeu (conta como nada); [] = "não, é minha
+   * reserva". O que está aqui sai da conta da reserva (o mesmo real não pode
+   * ser reserva e meta ao mesmo tempo) e entra na meta desde o mês 0, rendendo.
+   */
+  guardados?: GuardadoNaMeta[];
 }
 
 export type Moradia = "pais" | "aluguel" | "dividido" | "propria" | "financiada";
@@ -266,6 +288,11 @@ export interface Plano {
   alocacoes: Alocacao[];
   folego: Folego;
   reserva: Reserva;
+  /**
+   * a parte do guardado que a pessoa pôs na meta (Meta.guardados, limitada ao
+   * guardado). Fica FORA do fôlego e da reserva: 0 quando nada foi pra meta
+   */
+  guardadoNaMeta: number;
   dividas: QuadroDividas;
   /**
    * só existe quando há dívida cara sem prazo fora do modo corte; null quando

@@ -4,6 +4,7 @@
 */
 
 import { MAX_GRUPOS, MAX_ITENS_POR_GRUPO, MAX_RENDIMENTO_MENSAL, MESES_SIMULACAO_MAX } from "./config";
+import { saldosIniciaisDaMeta } from "./guardado-meta";
 import type { Meta } from "./types";
 import { arredondar } from "./format";
 
@@ -101,6 +102,8 @@ export interface ProjecaoMeta {
   mesEstimado: string | null;
   /** o mesmo prazo ignorando o rendimento dos grupos — é o efeito dos juros, em meses */
   semRendimento: number | null;
+  /** o que já estava guardado pra meta no mês 0 (Meta.guardados); 0 quando a meta começa do zero */
+  jaGuardado: number;
 }
 
 /*
@@ -291,23 +294,35 @@ interface Contribuicao {
   rendimento, então não dá pra usar a fórmula fechada de série uniforme — o
   saldo é a soma de vários saldos que crescem em ritmos diferentes.
 
-  Saldo inicial ZERO por decisão de produto: o que já está guardado continua
-  sendo reserva de emergência, não entrada da meta.
+  Saldo inicial: o que a pessoa DECIDIU pôr na meta do que já tinha guardado
+  (Meta.guardados), cada pote rendendo a sua taxa desde o mês 0. Sem essa
+  decisão, zero: o guardado continua sendo reserva de emergência.
 
   A comparação é em centavos (via `arredondar`), como a tela mostra: em float a
   soma fica 1e-12 abaixo do alvo e o mês certo "some".
 */
-function mesesAteOAlvo(contribuicoes: Contribuicao[], valorAlvo: number): number | null {
+function mesesAteOAlvo(
+  contribuicoes: Contribuicao[],
+  valorAlvo: number,
+  iniciais: Contribuicao[] = [],
+): number | null {
   if (valorAlvo <= 0) return 0;
-  // saldo começa em zero: sem nenhum aporte, juro sobre nada continua sendo nada
-  if (!contribuicoes.some((c) => c.valor > 0)) return null;
+  // o que já estava guardado pra meta pode bastar sozinho: meta paga no mês 0
+  if (arredondar(somar(iniciais.map((s) => s.valor))) >= valorAlvo) return 0;
+  // sem aporte e sem saldo rendendo, nada se mexe: juro sobre nada continua sendo nada
+  if (!contribuicoes.some((c) => c.valor > 0) && !iniciais.some((s) => s.valor > 0 && s.taxa > 0)) return null;
 
   const saldos = contribuicoes.map(() => 0);
+  const estoque = iniciais.map((s) => s.valor);
   for (let mes = 1; mes <= MESES_SIMULACAO_MAX; mes++) {
     let total = 0;
     for (let i = 0; i < saldos.length; i++) {
       saldos[i] = saldos[i] * (1 + contribuicoes[i].taxa) + contribuicoes[i].valor;
       total += saldos[i];
+    }
+    for (let i = 0; i < estoque.length; i++) {
+      estoque[i] = estoque[i] * (1 + iniciais[i].taxa);
+      total += estoque[i];
     }
     if (arredondar(total) >= valorAlvo) return mes;
   }
@@ -370,10 +385,12 @@ export function projetarMeta(
   const aporteMensal = arredondar(somar(contribuicoes.map((c) => c.valor)));
   const valorAlvo = arredondar(Number.isFinite(meta.valorAlvo) ? meta.valorAlvo : 0);
 
-  const meses = mesesAteOAlvo(contribuicoes, valorAlvo);
+  const iniciais = saldosIniciaisDaMeta(meta);
+  const meses = mesesAteOAlvo(contribuicoes, valorAlvo, iniciais);
   const semRendimento = mesesAteOAlvo(
     contribuicoes.map((c) => ({ valor: c.valor, taxa: 0 })),
     valorAlvo,
+    iniciais.map((s) => ({ valor: s.valor, taxa: 0 })),
   );
 
   return {
@@ -382,6 +399,7 @@ export function projetarMeta(
     meses,
     mesEstimado: meses === null ? null : mesEmTexto(hoje, meses),
     semRendimento,
+    jaGuardado: arredondar(somar(iniciais.map((s) => s.valor))),
   };
 }
 

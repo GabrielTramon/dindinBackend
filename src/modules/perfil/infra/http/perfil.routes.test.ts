@@ -46,14 +46,21 @@ const ESCALARES = {
   guardado: 1000,
 } as const;
 
-/** as respostas posteriores à v1: renda bruta, ritmo e meta */
+/** os potes do que já está guardado pra meta: um que rende, um que não */
+const POTES = [
+  { id: 'pote-cdb', nome: 'CDB', valor: 1500.75, rendimentoMensal: 0.0085 },
+  { id: 'pote-poupanca', nome: 'Poupança', valor: 200 },
+];
+
+/** as respostas posteriores à v1: renda bruta, ritmo, aporte escolhido e meta (com os potes) */
 const NOVOS = {
   rendaInformada: 'bruta',
   salarioBruto: 3500.75,
   dependentes: 2,
   competenciaTabela: '2026-01',
   ritmo: 'acelerado',
-  meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+  aporteEscolhido: 812.34,
+  meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99, guardados: POTES },
 } as const;
 
 const COMPLETO: PerfilDoMotor = { ...ESCALARES, gastosFixos: [], dividas: [] };
@@ -426,6 +433,68 @@ describe('Perfil — renda bruta, ritmo e meta pelo HTTP', () => {
     const res = await sincronizar('sub-1', { ...COMPLETO, rendaInformada: 'bruta' }).expect(400);
     expect(res.body.error.details).toEqual({ salarioBruto: 'Informe o seu salário bruto' });
     await obterCompleto('sub-1').expect(404);
+  });
+});
+
+/*
+  Os potes do que a pessoa já tem guardado e pôs na meta (meta.guardados) pelas
+  portas do perfil. Vivem dentro da meta: o PATCH com meta troca a meta inteira
+  (potes inclusive) e o PUT sem meta tira os dois.
+*/
+describe('Perfil — potes da meta (meta.guardados) pelo HTTP', () => {
+  const META = { tipo: 'viagem', valorAlvo: 12_000, guardados: POTES };
+
+  it('PATCH /perfil grava a meta com os potes, e GET /perfil e GET /perfil/completo devolvem iguais', async () => {
+    await salvar('sub-1', ESCALARES).expect(201);
+    const res = await atualizar('sub-1', { meta: META }).expect(200);
+    expect(res.body.meta).toStrictEqual(META);
+    expect((await obter('sub-1').expect(200)).body.meta).toStrictEqual(META);
+    expect((await obterCompleto('sub-1').expect(200)).body.meta).toStrictEqual(META);
+  });
+
+  it('guardados: [] ("é a minha reserva") volta [], diferente de ausente', async () => {
+    const res = await salvar('sub-1', { ...ESCALARES, meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [] } }).expect(201);
+    expect(res.body.meta).toStrictEqual({ tipo: 'carro', valorAlvo: 45_000, guardados: [] });
+    const sem = await salvar('sub-1', { ...ESCALARES, meta: { tipo: 'carro', valorAlvo: 45_000 } }).expect(200);
+    expect(sem.body.meta).toStrictEqual({ tipo: 'carro', valorAlvo: 45_000 });
+  });
+
+  it('PATCH com meta nova sem guardados leva os potes embora; PUT sem meta tira a meta e os potes', async () => {
+    await salvar('sub-1', { ...ESCALARES, meta: META }).expect(201);
+    const trocada = await atualizar('sub-1', { meta: { tipo: 'casa', valorAlvo: 300_000 } }).expect(200);
+    expect(trocada.body.meta).toStrictEqual({ tipo: 'casa', valorAlvo: 300_000 });
+
+    await atualizar('sub-1', { meta: META }).expect(200);
+    const semMeta = await salvar('sub-1', ESCALARES).expect(200);
+    expect(semMeta.body).not.toHaveProperty('meta');
+    expect((await obterCompleto('sub-1').expect(200)).body).not.toHaveProperty('meta');
+  });
+
+  it('sem trava contra o guardado do perfil: potes somando mais do que o guardado passam (o motor limita)', async () => {
+    const res = await salvar('sub-1', { ...ESCALARES, guardado: 100, meta: META }).expect(201);
+    expect(res.body.meta.guardados).toStrictEqual(POTES);
+  });
+
+  const cinco = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, nome: 'Pote', valor: 10 }));
+  it.each<[string, unknown[], string]>([
+    ['mais de 4 potes', cinco, 'meta.guardados'],
+    ['valor com 3 casas', [{ ...POTES[0], valor: 10.005 }], 'meta.guardados.0.valor'],
+    ['valor negativo', [{ ...POTES[0], valor: -1 }], 'meta.guardados.0.valor'],
+    ['rendimento acima de 5% ao mês', [POTES[1], { ...POTES[0], rendimentoMensal: 0.06 }], 'meta.guardados.1.rendimentoMensal'],
+    ['rendimento com 5 casas', [{ ...POTES[0], rendimentoMensal: 0.00855 }], 'meta.guardados.0.rendimentoMensal'],
+    ['pote sem id', [{ nome: 'CDB', valor: 10 }], 'meta.guardados.0.id'],
+  ])('%s → 400 no caminho do pote, pelas três portas, e nada muda', async (_caso, guardados, campo) => {
+    const meta = { tipo: 'carro', valorAlvo: 45_000, guardados };
+    const put = await salvar('sub-1', { ...ESCALARES, meta }).expect(400);
+    expect(put.body.error.code).toBe('VALIDACAO');
+    expect(put.body.error.details).toHaveProperty([campo]);
+    const completo = await sincronizar('sub-1', { ...COMPLETO, meta }).expect(400);
+    expect(completo.body.error.details).toHaveProperty([campo]);
+
+    await salvar('sub-1', ESCALARES).expect(201);
+    const patch = await atualizar('sub-1', { meta }).expect(400);
+    expect(patch.body.error.details).toHaveProperty([campo]);
+    expect((await obter('sub-1').expect(200)).body).not.toHaveProperty('meta');
   });
 });
 

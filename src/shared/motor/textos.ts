@@ -422,11 +422,19 @@ const metaDetalhe = {
       ? ": os potes marcados entram desde já e o plano soma quando as prioridades de cima fecharem."
       : ": o plano começa a juntar pra ela quando as prioridades de cima fecharem.";
   },
-  /** "Entra nesta conta: Investimento e o que o plano guarda, quando as prioridades de cima fecharem." */
-  entraNaConta: (potes: string[], planoEntra: boolean, planoDepois: boolean) => {
-    const partes = [...potes, ...(planoEntra ? ["o que o plano guarda"] : [])];
+  /** "Entra nesta conta: o que você já guardou pra ela, Investimento e o que o plano guarda, quando…" */
+  entraNaConta: (potes: string[], planoEntra: boolean, planoDepois: boolean, jaGuardado = false) => {
+    const partes = [
+      ...(jaGuardado ? ["o que você já guardou pra ela (rendendo desde já)"] : []),
+      ...potes,
+      ...(planoEntra ? ["o que o plano guarda"] : []),
+    ];
     return `Entra nesta conta: ${listar(partes)}${planoEntra && planoDepois ? ", quando as prioridades de cima fecharem" : ""}.`;
   },
+  /** "Já guardado pra ela: R$ 10.600 (32% do caminho)." */
+  jaGuardado: (valor: number, alvo: number) =>
+    `Já guardado pra ela: ${formatBRL(Math.min(valor, alvo))}${alvo > 0 && valor < alvo ? ` (${Math.floor((valor / alvo) * 100)}% do caminho)` : ""}.`,
+  garantida: "Já garantida: o que você guardou pra ela cobre o valor inteiro. O que o plano guarda por mês pode ir pra uma meta nova (troque em Ajustar respostas).",
 };
 
 export const textos = { decisao, proximosPassos, alocacao, corte, metaNaoFecha, sobreOsRitmos, metaDetalhe };

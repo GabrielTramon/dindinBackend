@@ -320,6 +320,59 @@ describe('POST /api/v1/planos/simular', () => {
     });
   });
 
+  /*
+    Os potes do que já está guardado pra meta (meta.guardados): o motor tira a
+    parte que foi pra meta do guardado antes de montar fôlego e reserva, e
+    limita a soma ao guardado — o servidor não trava nada, só confere as casas.
+  */
+  it('meta com potes: o plano tira o que foi pra meta do fôlego e limita ao guardado', async () => {
+    const guardados = [
+      { id: 'pote-cdb', nome: 'CDB', valor: 100, rendimentoMensal: 0.0085 },
+      { id: 'pote-poupanca', nome: 'Poupança', valor: 20.5 },
+    ];
+    const comPotes = { ...CAIO, meta: { tipo: 'viagem' as const, valorAlvo: 5000, guardados } };
+    const res = await simular(comPotes).expect(200);
+    expect(res.body).toEqual({ resultado: comoJson(gerarPlano(structuredClone(comPotes))) });
+    expect(res.body.resultado.guardadoNaMeta).toBe(120.5);
+    expect(res.body.resultado.perfil.meta.guardados).toEqual(guardados);
+    // 150 guardados, 120,50 na meta: sobram 29,50 pro fôlego
+    expect(res.body.resultado.folego.atual).toBe(29.5);
+
+    const semPotes = await simular({ ...CAIO, meta: { tipo: 'viagem', valorAlvo: 5000 } }).expect(200);
+    expect(semPotes.body.resultado.guardadoNaMeta).toBe(0);
+    expect(semPotes.body.resultado.folego.atual).toBe(150);
+
+    // potes somando mais do que o guardado passam: o motor usa no máximo o guardado
+    const alem = await simular({ ...CAIO, meta: { tipo: 'viagem', valorAlvo: 5000, guardados: [{ id: 'p', nome: 'CDB', valor: 900 }] } }).expect(200);
+    expect(alem.body.resultado.guardadoNaMeta).toBe(150);
+    expect(alem.body.resultado.folego.atual).toBe(0);
+  });
+
+  it('meta e potes com casas demais (dinheiro: 2, rendimento: 4) → 400 por campo, como no perfil salvo', async () => {
+    const res = await simular({
+      ...CAIO,
+      meta: {
+        tipo: 'viagem',
+        valorAlvo: 5000.001,
+        guardados: [
+          { id: 'a', nome: 'CDB', valor: 10.005 },
+          { id: 'b', nome: 'Tesouro', valor: 10, rendimentoMensal: 0.00855 },
+        ],
+      },
+    }).expect(400);
+    expect(res.body.error.details).toEqual({
+      'meta.valorAlvo': 'No máximo 2 casas decimais',
+      'meta.guardados.0.valor': 'No máximo 2 casas decimais',
+      'meta.guardados.1.rendimentoMensal': 'No máximo 4 casas decimais',
+    });
+  });
+
+  it('mais de 4 potes → 400 com a mensagem do motor', async () => {
+    const guardados = Array.from({ length: 5 }, (_, i) => ({ id: `p${i}`, nome: 'Pote', valor: 10 }));
+    const res = await simular({ ...CAIO, meta: { tipo: 'viagem', valorAlvo: 5000, guardados } }).expect(400);
+    expect(res.body.error.details).toEqual({ 'meta.guardados': 'No máximo 4 potes' });
+  });
+
   it('parcela maior que o saldo → 400 no campo da parcela (a trava do onboarding)', async () => {
     const res = await simular({ ...CAIO, dividas: [{ tipo: 'rotativo', saldo: 1000, parcela: 5000 }] }).expect(400);
     expect(res.body.error.details).toEqual({

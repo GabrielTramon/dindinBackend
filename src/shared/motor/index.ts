@@ -106,3 +106,13 @@ export type {
   SegmentoRitmo,
   OpcoesResposta,
 } from "./resposta";
+export {
+  comTotalGuardado,
+  guardadoNaMetaEfetivo,
+  metaComGuardadoEfetivo,
+  opcoesGuardadoNaMeta,
+  saldosIniciaisDaMeta,
+  totalGuardadoNaMeta,
+  NOME_GUARDADO_PADRAO,
+} from "./guardado-meta";
+export type { OpcoesGuardadoNaMeta } from "./guardado-meta";

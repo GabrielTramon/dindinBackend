@@ -22,6 +22,7 @@ const iso = (data: Date | null): string | null => data?.toISOString() ?? null;
   ficar vermelho — o bug que o checklist da especificação nomeia.
 
   Chave opcional ausente continua ausente: o domínio já omite (nunca manda null).
+  O id dos potes da meta já sai no caso de uso (ver dados-exportados.ts).
 */
 function presentPerfilExportado(perfil: PerfilExportado) {
   const { atualizadoEm, ...respostas } = perfil;

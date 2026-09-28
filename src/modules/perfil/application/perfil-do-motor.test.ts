@@ -155,7 +155,13 @@ describe('montarPerfilDoMotor', () => {
     `toEqual` é literal de propósito: um `toMatchObject` não veria um campo
     sumir, e é justamente sumir sem erro que o campo opcional faz.
   */
-  it('leva ritmo, meta e renda bruta pro formato do motor, campo a campo', () => {
+  // os potes do que já está guardado pra meta vão DENTRO dela, com o id que o cliente mandou
+  const POTES = [
+    { id: 'pote-cdb', nome: 'CDB', valor: 1500.75, rendimentoMensal: 0.0085 },
+    { id: 'pote-poupanca', nome: 'Poupança', valor: 200 },
+  ];
+
+  it('leva ritmo, meta (com os potes) e renda bruta pro formato do motor, campo a campo', () => {
     const perfil = Perfil.criar({
       subscriberId: 's1',
       ...ESCALARES,
@@ -164,7 +170,7 @@ describe('montarPerfilDoMotor', () => {
       dependentes: 2,
       competenciaTabela: '2026-01',
       ritmo: 'acelerado',
-      meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+      meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99, guardados: POTES },
       agora,
     });
 
@@ -175,7 +181,7 @@ describe('montarPerfilDoMotor', () => {
       dependentes: 2,
       competenciaTabela: '2026-01',
       ritmo: 'acelerado',
-      meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+      meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99, guardados: POTES },
       gastosFixos: [],
       dividas: [],
     });

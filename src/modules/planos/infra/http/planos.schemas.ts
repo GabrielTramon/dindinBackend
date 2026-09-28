@@ -51,4 +51,10 @@ export const simularBody = perfilSchema.superRefine((perfil, ctx) => {
     casas(d.parcela, ['dividas', i, 'parcela']);
     casas(d.taxaAnual, ['dividas', i, 'taxaAnual'], 4);
   });
+  // a meta e os potes do que já está guardado pra ela: as mesmas casas que o Perfil exige
+  casas(perfil.meta?.valorAlvo, ['meta', 'valorAlvo']);
+  perfil.meta?.guardados?.forEach((pote, i) => {
+    casas(pote.valor, ['meta', 'guardados', i, 'valor']);
+    casas(pote.rendimentoMensal, ['meta', 'guardados', i, 'rendimentoMensal'], 4);
+  });
 });

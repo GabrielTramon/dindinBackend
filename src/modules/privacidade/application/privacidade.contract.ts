@@ -13,7 +13,7 @@ import { Meta, type MetasRepository } from '../../metas';
 import { Grupo, type GruposRepository } from '../../organizacao';
 import { Perfil, type DadosPerfil, type PerfisRepository } from '../../perfil';
 import { VersaoPlano, type PerfilDoMotor, type VersoesPlanoRepository } from '../../planos';
-import type { DadosExportados } from './dados-exportados';
+import type { DadosExportados, MetaDoPerfilExportada } from './dados-exportados';
 import { CONFIRMACAO_EXCLUSAO, MENSAGEM_CONFIRMACAO_EXCLUSAO, type ExcluirContaUseCase } from './excluir-conta.use-case';
 import type { ExportarDadosUseCase } from './exportar-dados.use-case';
 
@@ -89,7 +89,7 @@ const em = (momento: keyof typeof EM) => new Date(EM[momento]);
 
 /*
   Perfil com TODOS os campos opcionais preenchidos (renda bruta, dependentes,
-  competência, ritmo e meta) de propósito: a exportação LGPD é o único lugar que
+  competência, ritmo e meta com potes) de propósito: a exportação LGPD é o único lugar que
   prova, campo a campo, que nenhuma resposta da pessoa fica de fora do arquivo.
   Com o perfil "só da v1" aqui, esquecer o ritmo no presenter passaria verde.
 */
@@ -100,7 +100,15 @@ const PERFIL: DadosPerfil = {
   dependentes: 1,
   competenciaTabela: '2026-01',
   ritmo: 'acelerado',
-  meta: { tipo: 'outro', nome: 'Intercâmbio', valorAlvo: 18000 },
+  meta: {
+    tipo: 'outro',
+    nome: 'Intercâmbio',
+    valorAlvo: 18000,
+    guardados: [
+      { id: 'pote-poupanca', nome: 'Poupança', valor: 250.25, rendimentoMensal: 0.006 },
+      { id: 'pote-carteira', nome: 'Carteira', valor: 50 },
+    ],
+  },
   tipoRenda: 'clt',
   idade: 24,
   moradia: 'aluguel',
@@ -260,12 +268,38 @@ export async function criarContaCompleta(r: RepositoriosDaConta, pessoa: PessoaD
   return { subscriberId, categoriaComGastoId: clube.id };
 }
 
+/*
+  A meta como vai no arquivo: os mesmos potes, SEM o id (veio do cliente e é
+  chave, não informação — a regra dos grupos). Literal de propósito: é o que o
+  arquivo tem que trazer, não uma cópia da conta que o caso de uso faz. Vale em
+  todo lugar onde a meta aparece: no perfil e na entrada e no resultado de cada
+  versão do plano.
+*/
+const META_NO_ARQUIVO: MetaDoPerfilExportada = {
+  tipo: 'outro',
+  nome: 'Intercâmbio',
+  valorAlvo: 18000,
+  guardados: [
+    { nome: 'Poupança', valor: 250.25, rendimentoMensal: 0.006 },
+    { nome: 'Carteira', valor: 50 },
+  ],
+};
+
+/** A versão do plano como vai no arquivo: entrada e resultado inteiros, com a meta de META_NO_ARQUIVO. */
+function versaoNoArquivo(entrada: PerfilDoMotor) {
+  const resultado = comoJson(gerarPlano(entrada));
+  return {
+    entrada: { ...comoJson(entrada), meta: META_NO_ARQUIVO },
+    resultado: { ...resultado, perfil: { ...resultado.perfil, meta: META_NO_ARQUIVO } },
+  };
+}
+
 /** O que exportar a conta de criarContaCompleta tem que devolver, campo a campo e na ordem. */
 export function exportacaoEsperada(pessoa: PessoaDeTeste, exportadoEm: Date): DadosExportados {
   return {
     exportadoEm,
     conta: { email: pessoa.email, criadoEm: em('cadastro'), emailVerificadoEm: em('confirmacao'), ativo: true },
-    perfil: { ...PERFIL, atualizadoEm: em('perfil') },
+    perfil: { ...PERFIL, meta: META_NO_ARQUIVO, atualizadoEm: em('perfil') },
     // do maior valor pro menor; a personalizada aparece pelo nome, como a do catálogo
     gastosFixos: [
       { categoria: 'Mercado', valor: 650, criadoEm: em('gastoMercado') },
@@ -280,8 +314,8 @@ export function exportacaoEsperada(pessoa: PessoaDeTeste, exportadoEm: Date): Da
       { tipo: 'emprestimo', saldo: 3000.55, parcela: null, taxaAnual: 0.4512, criadoEm: em('dividaEmprestimo') },
     ],
     planos: [
-      { versao: 2, criadoEm: em('plano2'), entrada: comoJson(ENTRADA_V2), resultado: comoJson(gerarPlano(ENTRADA_V2)) },
-      { versao: 1, criadoEm: em('plano1'), entrada: comoJson(ENTRADA_V1), resultado: comoJson(gerarPlano(ENTRADA_V1)) },
+      { versao: 2, criadoEm: em('plano2'), ...versaoNoArquivo(ENTRADA_V2) },
+      { versao: 1, criadoEm: em('plano1'), ...versaoNoArquivo(ENTRADA_V1) },
     ],
     metas: [
       {

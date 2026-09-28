@@ -41,7 +41,16 @@ const NOVOS: Partial<DadosPerfil> = {
   competenciaTabela: '2026-01',
   ritmo: 'acelerado',
   aporteEscolhido: 812.34,
-  meta: { tipo: 'outro', nome: 'Notebook novo', valorAlvo: 5400.99 },
+  meta: {
+    tipo: 'outro',
+    nome: 'Notebook novo',
+    valorAlvo: 5400.99,
+    // os potes do que já está guardado pra meta (coluna JSONB): um que rende, um que não
+    guardados: [
+      { id: 'pote-cdb', nome: 'CDB', valor: 1500.75, rendimentoMensal: 0.0085 },
+      { id: 'pote-poupanca', nome: 'Poupança', valor: 0.07 },
+    ],
+  },
 };
 
 export function describePerfisRepositoryContract(nome: string, setup: () => Promise<PerfisRepositoryHarness>) {
@@ -154,6 +163,62 @@ export function describePerfisRepositoryContract(nome: string, setup: () => Prom
       await h.repo.save(semNada);
 
       expect((await h.repo.findBySubscriberId(sub))?.toSnapshot()).toStrictEqual(semNada.toSnapshot());
+    });
+
+    /*
+      Os potes da meta (meta_guardados, JSONB). Ausente ("não respondeu") e []
+      ("é a minha reserva") são respostas diferentes: as duas voltam como
+      entraram. E os potes vivem dentro da meta: trocar ou tirar a meta leva
+      os potes junto — nada fica na coluna pra reaparecer depois.
+    */
+    it('meta com guardados: [] volta [], e meta sem guardados volta sem a chave', async () => {
+      const [comVazio, semPotes] = [await h.criarSubscriber(), await h.criarSubscriber()];
+      await h.repo.save(perfil(comVazio, { meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [] } }));
+      await h.repo.save(perfil(semPotes, { meta: { tipo: 'carro', valorAlvo: 45_000 } }));
+
+      expect((await h.repo.findBySubscriberId(comVazio))?.toDados().meta).toStrictEqual({
+        tipo: 'carro',
+        valorAlvo: 45_000,
+        guardados: [],
+      });
+      expect((await h.repo.findBySubscriberId(semPotes))?.toDados().meta).toStrictEqual({ tipo: 'carro', valorAlvo: 45_000 });
+    });
+
+    it('os potes voltam na ordem, com centavos, rendimento de 4 casas e sem chave de rendimento quando não rende', async () => {
+      const sub = await h.criarSubscriber();
+      const guardados = [
+        { id: 'b', nome: 'Poupança', valor: 19.99 },
+        { id: 'a', nome: 'Tesouro', valor: 99_999_999.99, rendimentoMensal: 0.0115 },
+        { id: 'c', nome: '', valor: 0, rendimentoMensal: 0 },
+        { id: 'd', nome: 'CDB do banco', valor: 1.1, rendimentoMensal: 0.05 },
+      ];
+      // a soma passa do guardado de propósito: não há trava (o motor limita na leitura)
+      const p = perfil(sub, { guardado: 10, meta: { tipo: 'viagem', valorAlvo: 8000, guardados } });
+      await h.repo.save(p);
+
+      const lida = (await h.repo.findBySubscriberId(sub))?.toDados().meta?.guardados;
+      expect(lida).toStrictEqual(guardados);
+      expect(Object.keys(lida![0]!)).toEqual(['id', 'nome', 'valor']);
+      expect(Object.keys(lida![1]!)).toEqual(['id', 'nome', 'valor', 'rendimentoMensal']);
+    });
+
+    it('trocar a meta por uma sem guardados, ou tirar a meta, apaga os potes', async () => {
+      const sub = await h.criarSubscriber();
+      const p = perfil(sub, NOVOS);
+      await h.repo.save(p);
+
+      p.atualizar({ meta: { tipo: 'casa', valorAlvo: 300_000 } }, depois);
+      await h.repo.save(p);
+      expect((await h.repo.findBySubscriberId(sub))?.toDados().meta).toStrictEqual({ tipo: 'casa', valorAlvo: 300_000 });
+
+      // com potes de novo, e depois sem meta nenhuma: a meta de volta não traz potes velhos
+      p.atualizar({ meta: NOVOS.meta }, depois);
+      await h.repo.save(p);
+      p.substituir(DADOS, depois);
+      await h.repo.save(p);
+      p.atualizar({ meta: { tipo: 'casa', valorAlvo: 300_000 } }, depois);
+      await h.repo.save(p);
+      expect((await h.repo.findBySubscriberId(sub))?.toDados().meta).toStrictEqual({ tipo: 'casa', valorAlvo: 300_000 });
     });
 
     it('meta sem nome (tipo do catálogo) volta sem a chave nome', async () => {

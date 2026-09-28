@@ -1,7 +1,7 @@
 import { ValidationError } from '../../../shared/domain/errors';
-import { ensureMoneyPrecision, invalid, validateField } from '../../../shared/domain/guards';
+import { ensure, ensureMoneyPrecision, hasAtMostDecimals, invalid, validateField } from '../../../shared/domain/guards';
 import { MORADIAS_SEM_CUSTO, perfilSchema } from '../../../shared/motor/schema';
-import type { Meta, Moradia, RendaInformada, Ritmo, TipoRenda } from '../../../shared/motor/types';
+import type { GuardadoNaMeta, Meta, Moradia, RendaInformada, Ritmo, TipoRenda } from '../../../shared/motor/types';
 
 /*
   O perfil financeiro: as respostas escalares do onboarding. Gastos fixos e
@@ -14,7 +14,8 @@ import type { Meta, Moradia, RendaInformada, Ritmo, TipoRenda } from '../../../s
   o custo de moradia, igual o onboarding faz.
 
   Os campos opcionais (rendaInformada, salarioBruto, dependentes,
-  competenciaTabela, ritmo, meta) são todos posteriores à v1 e por isso nunca
+  competenciaTabela, ritmo, aporteEscolhido, meta e, dentro dela, os potes
+  meta.guardados) são todos posteriores à v1 e por isso nunca
   obrigatórios: perfil respondido antes deles continua válido. Ausente é
   SEMPRE `undefined`, nunca `null`, e `toDados`/`toSnapshot` OMITEM a chave —
   chave presente com `null` mudaria o inputSnap de quem já tem plano gravado e
@@ -35,7 +36,11 @@ export interface DadosPerfil {
   ritmo?: Ritmo;
   /** o que a pessoa decidiu guardar por mês, no lugar do que o ritmo sugere */
   aporteEscolhido?: number;
-  /** a meta principal: uma só */
+  /**
+   * a meta principal: uma só. `meta.guardados` são os potes do que a pessoa JÁ
+   * tem guardado e pôs na meta (ausente = não respondeu; [] = "é a minha
+   * reserva") — vivem dentro da meta: trocar ou tirar a meta leva os potes junto
+   */
   meta?: Meta;
   tipoRenda: TipoRenda;
   idade: number;
@@ -78,17 +83,59 @@ function dinheiroOpcional(schema: (typeof campos)['salarioBruto'], valor: unknow
   return v;
 }
 
+/** Rendimento é fração ao mês (0,8% = 0.008): 4 casas, a mesma regra dos grupos da organização. */
+const CASAS_RENDIMENTO = 4;
+
+/*
+  Os potes do que já está guardado pra meta. Os limites (até 4 potes, valor de
+  0 a 100 milhões, rendimento de 0 a 5% ao mês, nome até 40) são do
+  guardadoNaMetaSchema do motor, já aplicado pelo metaSchema. Por cima, só a
+  regra de armazenamento que o motor não tem: dinheiro com 2 casas e taxa com 4.
+
+  SEM trava contra o `guardado` do perfil, de propósito (decisão de produto):
+  baixar o "quanto você tem guardado" depois não pode fazer o perfil ser
+  recusado — o motor limita a soma ao guardado na leitura (guardadoNaMetaEfetivo).
+
+  Cada pote é remontado campo a campo, na ordem do tipo do motor, e
+  `rendimentoMensal` ausente NÃO vira chave (ausente = não rende).
+*/
+function validarGuardados(guardados: readonly GuardadoNaMeta[]): GuardadoNaMeta[] {
+  return guardados.map((pote, i) => {
+    ensureMoneyPrecision(pote.valor, `meta.guardados.${i}.valor`);
+    if (pote.rendimentoMensal !== undefined) {
+      ensure(
+        hasAtMostDecimals(pote.rendimentoMensal, CASAS_RENDIMENTO),
+        `meta.guardados.${i}.rendimentoMensal`,
+        `No máximo ${CASAS_RENDIMENTO} casas decimais`,
+      );
+    }
+    return {
+      id: pote.id,
+      nome: pote.nome,
+      valor: pote.valor,
+      ...(pote.rendimentoMensal !== undefined ? { rendimentoMensal: pote.rendimentoMensal } : {}),
+    };
+  });
+}
+
 /**
  * A meta principal, validada pelo metaSchema do motor (que já recusa tipo
- * "outro" sem nome). Nome vazio nos outros tipos vira ausência: guardar `""`
- * faria o mesmo perfil voltar diferente do que entrou.
+ * "outro" sem nome e confere os potes). Nome vazio nos outros tipos vira
+ * ausência: guardar `""` faria o mesmo perfil voltar diferente do que entrou.
+ * `guardados: []` NÃO vira ausência: é a resposta "não, é a minha reserva".
  */
 function validarMeta(valor: unknown): Meta | undefined {
   const meta = validateField(campos.meta, valor, 'meta');
   if (meta === undefined) return undefined;
   ensureMoneyPrecision(meta.valorAlvo, 'meta.valorAlvo');
   const nome = meta.nome !== undefined && meta.nome.length > 0 ? meta.nome : undefined;
-  return { tipo: meta.tipo, ...(nome !== undefined ? { nome } : {}), valorAlvo: meta.valorAlvo };
+  const guardados = meta.guardados !== undefined ? validarGuardados(meta.guardados) : undefined;
+  return {
+    tipo: meta.tipo,
+    ...(nome !== undefined ? { nome } : {}),
+    valorAlvo: meta.valorAlvo,
+    ...(guardados !== undefined ? { guardados } : {}),
+  };
 }
 
 function validar(dados: DadosPerfil): DadosPerfil {
@@ -200,6 +247,9 @@ export class Perfil {
    *
    * Campo opcional não tem como ser LIMPO por aqui (undefined já significa "não
    * mexe"); quem quer tirar o ritmo ou a meta manda o PUT sem eles.
+   *
+   * A meta é um valor só: `meta` informada troca a meta INTEIRA, potes
+   * (`guardados`) inclusive — meta nova sem `guardados` fica sem potes.
    */
   atualizar(dados: Partial<DadosPerfil>, agora: Date): void {
     const novaMoradia = dados.moradia ?? this.props.moradia;

@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { SLUGS_CATEGORIA, SLUG_OUTRO } from "./categorias";
-import { MAX_DIVIDAS, MAX_GASTOS_FIXOS } from "./config";
+import { MAX_DIVIDAS, MAX_GASTOS_FIXOS, MAX_GUARDADOS_NA_META, MAX_RENDIMENTO_MENSAL } from "./config";
 
 /*
   Validação do perfil. Mensagens em pt-BR porque aparecem na tela.
@@ -37,6 +37,26 @@ export const METAS_TIPO = [
   "outro",
 ] as const;
 
+/*
+  Um pote do que já está guardado pra meta. Sem trava contra o `guardado` do
+  perfil de propósito: baixar o "quanto você tem guardado" depois não pode
+  fazer o plano sumir no F5 — quem limita a soma ao guardado é o motor
+  (guardadoNaMetaEfetivo).
+*/
+export const guardadoNaMetaSchema = z.object({
+  id: z.string().min(1).max(64),
+  nome: z.string().trim().max(40, { error: "No máximo 40 caracteres" }),
+  valor: z
+    .number({ error: "Informe quanto tem nesse pote" })
+    .nonnegative({ error: "Não pode ser negativo" })
+    .max(100_000_000, { error: "Confere esse valor? Está muito alto" }),
+  rendimentoMensal: z
+    .number()
+    .min(0, { error: "Não pode ser negativo" })
+    .max(MAX_RENDIMENTO_MENSAL, { error: "No máximo 5% ao mês" })
+    .optional(),
+});
+
 export const metaSchema = z
   .object({
     tipo: z.enum(METAS_TIPO, { error: "Escolha a sua meta" }),
@@ -45,6 +65,10 @@ export const metaSchema = z
       .number({ error: "Informe quanto você quer juntar" })
       .positive({ error: "O valor precisa ser maior que zero" })
       .max(100_000_000, { error: "Confere esse valor? Está muito alto" }),
+    guardados: z
+      .array(guardadoNaMetaSchema)
+      .max(MAX_GUARDADOS_NA_META, { error: `No máximo ${MAX_GUARDADOS_NA_META} potes` })
+      .optional(),
   })
   // meta "outro" sem nome vira uma barra de progresso sem título na tela
   .refine((m) => m.tipo !== "outro" || (m.nome !== undefined && m.nome.length > 0), {

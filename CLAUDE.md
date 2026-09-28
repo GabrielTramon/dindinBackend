@@ -67,6 +67,7 @@ O perfil ganhou renda informada, salário bruto, dependentes, competência da ta
 - No domínio, ausente é **`undefined`, nunca `null`**, e `toDados`/`toSnapshot` **omitem a chave**: é isso que mantém o `inputSnap` de quem já tem plano idêntico ao de antes. No mapper, a ida usa spread condicional (`?? undefined` deixaria a chave presente) e a volta usa `?? null` (é o null que apaga a coluna).
 - **PUT substitui, PATCH mescla.** `Perfil.substituir` apaga opcional ausente — sem isso a escolha ficaria gravada pra sempre. Limpar um campo é o PUT sem ele.
 - O que prova tudo isso é o contrato do repositório (roda em memória e no Postgres) mais o passo do e2e que vai do PATCH até o `inputSnap` da versão gravada.
+- **Meta**: um objeto só, em colunas do `Profile` (`meta_tipo`, `meta_nome`, `meta_valor_alvo`) + `meta_guardados` (JSONB, desde 25/09/2026): os **potes** do que a pessoa JÁ tem guardado e pôs na meta (`meta.guardados`, `[{ id, nome, valor, rendimentoMensal? }]`, até 4). Ausente = não respondeu; `[]` = "é a minha reserva" — os dois voltam como entraram. Validados pelo `metaSchema` do motor + 2 casas no valor e 4 no rendimento; **sem trava contra o `guardado`** (o motor limita na leitura, `guardadoNaMetaEfetivo`). Vivem dentro da meta: PATCH com `meta` troca a meta inteira (sem `guardados` = sem potes) e meta ausente grava a coluna como NULL (`Prisma.DbNull`). A exportação LGPD leva os potes **sem o id** (no perfil e na entrada/resultado de cada versão do plano), como os grupos.
 
 ### Nomes
 
@@ -169,6 +170,6 @@ A conta é grátis e opcional — o app inteiro funciona sem ela, com o plano no
 ## Banco
 
 - Migrations em `prisma/migrations`, SQL escrito/revisado à mão quando há rename (Prisma gera DROP+ADD).
-- Migration nova no código = `yarn prisma:deploy` (`prisma migrate deploy`) no banco ANTES de usar a API: o Prisma lê todas as colunas do model, então coluna faltando (ex.: `senha_hash`, de `20260924000000_senha`, e `versao_sessao`, de `20260924010000_versao_da_sessao`) derruba com 500 toda rota que lê a conta, inclusive o middleware de sessão. `/api/health/ready` continua ok nesse caso.
+- Migration nova no código = `yarn prisma:deploy` (`prisma migrate deploy`) no banco ANTES de usar a API: o Prisma lê todas as colunas do model, então coluna faltando (ex.: `senha_hash`, de `20260924000000_senha`, e `versao_sessao`, de `20260924010000_versao_da_sessao`) derruba com 500 toda rota que lê a conta, inclusive o middleware de sessão. Idem `meta_guardados` (`20260925000000_meta_guardados`) pra toda rota que lê o perfil (perfil, planos, exportar). `/api/health/ready` continua ok nesse caso.
 - O catálogo de categorias é semeado na migration e reaplicável com `yarn db:seed` (lê do motor).
 - `.env` do usuário tem a senha do Postgres local como placeholder: não tente adivinhar. Sem banco, use `PERSISTENCIA=memoria`.

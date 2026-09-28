@@ -297,3 +297,122 @@ describe('Perfil — campos opcionais (renda bruta, ritmo e meta)', () => {
     expect(p.toSnapshot()).toStrictEqual({ ...dados, subscriberId: 's1', atualizadoEm: depois });
   });
 });
+
+/*
+  Os potes do que a pessoa JÁ tem guardado e pôs na meta (meta.guardados).
+  Vivem DENTRO da meta: não são campo do perfil, então trocar ou tirar a meta
+  leva os potes junto. Ausente ("não respondeu") e [] ("é a minha reserva") são
+  respostas diferentes e as duas têm que sobreviver.
+*/
+describe('Perfil — potes do que já está guardado pra meta (meta.guardados)', () => {
+  const CDB = { id: 'pote-cdb', nome: 'CDB', valor: 1500.5, rendimentoMensal: 0.0085 };
+  const POUPANCA = { id: 'pote-poupanca', nome: 'Poupança', valor: 200 };
+  const META = { tipo: 'viagem', valorAlvo: 12_000, guardados: [CDB, POUPANCA] } as const;
+
+  it('criar guarda os potes como vieram, e toDados leva igual', () => {
+    const p = criar({ meta: { ...META, guardados: [CDB, POUPANCA] } });
+    expect(p.meta).toStrictEqual({ tipo: 'viagem', valorAlvo: 12_000, guardados: [CDB, POUPANCA] });
+    expect(p.toDados()).toStrictEqual({ ...dados, meta: { tipo: 'viagem', valorAlvo: 12_000, guardados: [CDB, POUPANCA] } });
+  });
+
+  it('[] ("não, é a minha reserva") continua [], e ausente continua sem a chave', () => {
+    expect(criar({ meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [] } }).meta).toStrictEqual({
+      tipo: 'carro',
+      valorAlvo: 45_000,
+      guardados: [],
+    });
+    expect(criar({ meta: { tipo: 'carro', valorAlvo: 45_000 } }).meta).not.toHaveProperty('guardados');
+  });
+
+  it('rendimento ausente não vira chave (nem com undefined explícito): pote sem rendimento não rende', () => {
+    const p = criar({ meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [{ ...POUPANCA, rendimentoMensal: undefined }] } });
+    expect(Object.keys(p.meta!.guardados![0]!).sort()).toEqual(['id', 'nome', 'valor']);
+  });
+
+  it('chave extra num pote não entra, e o nome é aparado pelo schema do motor', () => {
+    const p = criar({
+      meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [{ ...CDB, nome: '  CDB  ', invasor: 1 } as never] },
+    });
+    expect(p.meta!.guardados).toStrictEqual([CDB]);
+  });
+
+  it('pote com zero é válido (a pessoa ainda não pôs nada nele) e rendimento no teto de 5% também', () => {
+    const p = criar({
+      meta: { tipo: 'carro', valorAlvo: 45_000, guardados: [{ ...POUPANCA, valor: 0 }, { ...CDB, rendimentoMensal: 0.05 }] },
+    });
+    expect(p.meta!.guardados!.map((g) => [g.valor, g.rendimentoMensal])).toEqual([
+      [0, undefined],
+      [1500.5, 0.05],
+    ]);
+  });
+
+  /*
+    Decisão de produto: a soma dos potes pode passar do `guardado` do perfil.
+    Baixar o "quanto você tem guardado" depois não pode fazer o perfil ser
+    recusado — o motor limita na leitura (guardadoNaMetaEfetivo).
+  */
+  it('sem trava contra o guardado do perfil: potes somando mais do que o guardado passam', () => {
+    const p = criar({ guardado: 100, meta: { ...META, guardados: [CDB, POUPANCA] } });
+    expect(p.meta!.guardados).toHaveLength(2);
+  });
+
+  it('a entrada e o getter são copiados: mexer neles não altera o perfil', () => {
+    const entrada = { tipo: 'carro' as const, valorAlvo: 45_000, guardados: [{ ...CDB }] };
+    const p = criar({ meta: entrada });
+    entrada.guardados[0]!.valor = 1;
+    p.meta!.guardados![0]!.valor = 2;
+    p.toDados().meta!.guardados!.push({ ...POUPANCA });
+    expect(p.meta!.guardados).toStrictEqual([CDB]);
+  });
+
+  it.each<[string, unknown, Record<string, string>]>([
+    ['mais de 4 potes', Array.from({ length: 5 }, (_, i) => ({ ...POUPANCA, id: `p${i}` })), { 'meta.guardados': 'No máximo 4 potes' }],
+    ['valor negativo', [{ ...CDB, valor: -1 }], { 'meta.guardados.0.valor': 'Não pode ser negativo' }],
+    ['valor acima do teto do motor', [{ ...CDB, valor: 100_000_000.01 }], { 'meta.guardados.0.valor': 'Confere esse valor? Está muito alto' }],
+    ['valor que não é número', [{ ...CDB, valor: '10' }], { 'meta.guardados.0.valor': 'Informe quanto tem nesse pote' }],
+    ['valor com 3 casas', [POUPANCA, { ...CDB, valor: 10.005 }], { 'meta.guardados.1.valor': 'No máximo 2 casas decimais' }],
+    ['rendimento negativo', [{ ...CDB, rendimentoMensal: -0.001 }], { 'meta.guardados.0.rendimentoMensal': 'Não pode ser negativo' }],
+    ['rendimento acima de 5% ao mês', [{ ...CDB, rendimentoMensal: 0.051 }], { 'meta.guardados.0.rendimentoMensal': 'No máximo 5% ao mês' }],
+    ['rendimento com 5 casas', [{ ...CDB, rendimentoMensal: 0.00855 }], { 'meta.guardados.0.rendimentoMensal': 'No máximo 4 casas decimais' }],
+    ['nome com mais de 40', [{ ...CDB, nome: 'x'.repeat(41) }], { 'meta.guardados.0.nome': 'No máximo 40 caracteres' }],
+  ])('recusa %s no caminho do pote', (_caso, guardados, detalhes) => {
+    expect(erroDe(() => criar({ meta: { tipo: 'carro', valorAlvo: 45_000, guardados } as never })).details).toEqual(detalhes);
+  });
+
+  it.each<[string, unknown]>([
+    ['id vazio', [{ ...CDB, id: '' }]],
+    ['sem id', [{ nome: 'CDB', valor: 10 }]],
+    ['id com mais de 64', [{ ...CDB, id: 'x'.repeat(65) }]],
+    ['guardados que não é lista', { cdb: CDB }],
+  ])('recusa %s (regra do schema do motor)', (_caso, guardados) => {
+    const detalhes = erroDe(() => criar({ meta: { tipo: 'carro', valorAlvo: 45_000, guardados } as never })).details;
+    expect(Object.keys(detalhes ?? {})[0]).toMatch(/^meta\.guardados/);
+  });
+
+  it('PATCH com meta nova troca a meta INTEIRA: sem guardados, os potes vão embora junto', () => {
+    const p = criar({ meta: { ...META, guardados: [CDB, POUPANCA] } });
+    p.atualizar({ meta: { tipo: 'casa', valorAlvo: 300_000 } }, depois);
+    expect(p.meta).toStrictEqual({ tipo: 'casa', valorAlvo: 300_000 });
+
+    p.atualizar({ meta: { tipo: 'casa', valorAlvo: 300_000, guardados: [POUPANCA] } }, depois);
+    expect(p.meta).toStrictEqual({ tipo: 'casa', valorAlvo: 300_000, guardados: [POUPANCA] });
+  });
+
+  it('PATCH sem meta não mexe nos potes; PUT sem meta tira a meta e os potes', () => {
+    const p = criar({ meta: { ...META, guardados: [CDB] } });
+    p.atualizar({ guardado: 50 }, depois);
+    expect(p.meta?.guardados).toStrictEqual([CDB]);
+
+    p.substituir(dados, depois);
+    expect(p.toDados()).toStrictEqual(dados);
+  });
+
+  it('pote inválido num PATCH lança e o perfil continua exatamente como estava', () => {
+    const p = criar({ meta: { ...META, guardados: [CDB] } });
+    const antes = p.toSnapshot();
+    expect(() => p.atualizar({ meta: { tipo: 'carro', valorAlvo: 10, guardados: [{ ...CDB, valor: -1 }] } }, depois)).toThrow(
+      ValidationError,
+    );
+    expect(p.toSnapshot()).toStrictEqual(antes);
+  });
+});
