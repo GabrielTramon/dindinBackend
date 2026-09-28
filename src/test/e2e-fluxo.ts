@@ -7,6 +7,7 @@ import { createContainer, type Container, type Repositories } from '../main/cont
 import { createJobs } from '../main/jobs/jobs';
 import { mountModules } from '../main/routes';
 import type { BackgroundJobs } from '../shared/application/ports';
+import { CATEGORIAS } from '../shared/motor/categorias';
 import type { ErrorLogger } from '../shared/infra/http/error-handler';
 import { FixedClock, InMemoryMailer } from '../shared/infra/in-memory/doubles';
 import { MAX_PAGE_LIMIT } from '../shared/application/pagination';
@@ -605,7 +606,8 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     const categorias = await api.chamar('ana', 'get', '/categorias', { sessao: ana.sessao, status: 200 });
     const personalizadas = categorias.body.items.filter((c: { personalizada: boolean }) => c.personalizada);
     expect(personalizadas).toEqual([expect.objectContaining({ nome: 'Clube', slug: null, grupo: 'outros' })]);
-    expect(categorias.body.items).toHaveLength(25);
+    // o catálogo inteiro + a "Clube" dela
+    expect(categorias.body.items).toHaveLength(CATEGORIAS.length + 1);
   });
 
   await passo('mandar o mesmo perfil de novo não muda nada e mantém os ids dos gastos', async () => {
@@ -829,7 +831,7 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
       status: 201,
     });
     const categorias = await api.chamar('bruno', 'get', '/categorias', { sessao: bruno.sessao, status: 200 });
-    expect(categorias.body.items).toHaveLength(24);
+    expect(categorias.body.items).toHaveLength(CATEGORIAS.length);
   });
 
   await passo('Bruno não enxerga nem mexe em nada da Ana (404, igual a inexistente)', async () => {

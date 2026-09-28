@@ -28,7 +28,24 @@ export type { OpcoesMotor, Cronograma, ResultadoQuitacao } from "./motor";
 export { projetarSaldo, mesesParaMeta, aporteParaMeta, serieProjecao } from "./projecao";
 export type { ParametrosProjecao, PontoProjecao } from "./projecao";
 export { calcularINSS, calcularIRRF, brutoParaLiquido } from "./renda";
-export type { Holerite, DeducoesIRRF } from "./renda";
+export type { Holerite, DeducoesIRRF, DescontosFolha } from "./renda";
+export {
+  BENEFICIOS,
+  aplicarBeneficios,
+  beneficioPorTipo,
+  beneficiosSemGasto,
+  descontoDoValeTransporte,
+  nomeDoBeneficio,
+  valorDoBeneficio,
+} from "./beneficios";
+export type { BeneficioCatalogo } from "./beneficios";
+export {
+  decimoNosProximosMeses,
+  entradasDoDecimo,
+  primeiroMesDoDecimo,
+  valorDoDecimoTerceiro,
+} from "./decimo-terceiro";
+export type { EntradaExtra } from "./decimo-terceiro";
 export {
   METAS,
   ICONE_META_PADRAO,
@@ -51,6 +68,7 @@ export {
 export type { Grupo, ItemGrupo, GrupoOrganizado, FatiaItem, Organizacao, ProjecaoMeta } from "./organizacao";
 export {
   perfilSchema,
+  beneficioSchema,
   dividaSchema,
   gastoFixoSchema,
   metaSchema,
@@ -60,6 +78,7 @@ export {
   MORADIAS_SEM_CUSTO,
   TIPOS_DIVIDA,
   RITMOS,
+  TIPOS_BENEFICIO,
   RENDAS_INFORMADAS,
   METAS_TIPO,
 } from "./schema";
@@ -92,15 +111,27 @@ export {
   projetarMetaNoCaminho,
   projetarMetaDoPlano,
   aportePrevistoNasMetas,
+  decimoNaMeta,
   mesEstimado,
   mesCurto,
 } from "./marcos";
-export type { Marco, EstadoMarco, OpcoesMarcos, CaminhoDoPlano, MetaNoCaminho } from "./marcos";
-export { respostaDoPlano, cabeMaisNaMeta, NOME_CURTO_DIVIDA, NOME_RITMO, textosDivisor, textosPote } from "./resposta";
+export type { Marco, EstadoMarco, OpcoesMarcos, CaminhoDoPlano, MetaNoCaminho, DecimoNaMeta } from "./marcos";
+export {
+  respostaDoPlano,
+  cabeMaisNaMeta,
+  NOME_CURTO_DIVIDA,
+  NOME_RITMO,
+  textosDivisor,
+  textosPote,
+  textosSimulador,
+} from "./resposta";
+export { guardarPor, simularNoTempo, PERIODOS_DA_TABELA, MAX_MESES_SIMULADOS } from "./simulador";
+export type { ParametrosSimulacao, SimulacaoNoTempo } from "./simulador";
 export type {
   Resposta,
   RespostaPlano,
   AlvoResposta,
+  EtapasResposta,
   RespostaCorte,
   TempoResposta,
   SegmentoRitmo,

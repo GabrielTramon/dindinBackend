@@ -1,5 +1,6 @@
 import request from 'supertest';
 import { describe, expect, it } from 'vitest';
+import { CATEGORIAS } from '../shared/motor/categorias';
 import { APP_URL_E2E, executarFluxoCompleto, montarAmbiente, PASSOS_DO_FLUXO, retratoDaConta } from './e2e-fluxo';
 
 /*
@@ -19,7 +20,7 @@ describe('e2e (memória)', () => {
     const r = ambiente.container.repositories;
     expect((await retratoDaConta(r, ana.id)).conta).toBe(false);
     expect((await retratoDaConta(r, bruno.id)).conta).toBe(true);
-    expect(await r.categorias.listVisible(null)).toHaveLength(24);
+    expect(await r.categorias.listVisible(null)).toHaveLength(CATEGORIAS.length);
     // o fluxo usa o scrypt de verdade em vários passos: ~1,7 s sozinho, mas passa
     // dos 5 s padrão quando a suíte inteira roda em paralelo com outra carga
   }, 30_000);

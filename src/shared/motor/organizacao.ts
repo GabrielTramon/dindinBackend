@@ -305,15 +305,19 @@ function mesesAteOAlvo(
   contribuicoes: Contribuicao[],
   valorAlvo: number,
   iniciais: Contribuicao[] = [],
+  decimo: DecimoDaMeta | null = null,
 ): number | null {
   if (valorAlvo <= 0) return 0;
   // o que já estava guardado pra meta pode bastar sozinho: meta paga no mês 0
   if (arredondar(somar(iniciais.map((s) => s.valor))) >= valorAlvo) return 0;
   // sem aporte e sem saldo rendendo, nada se mexe: juro sobre nada continua sendo nada
-  if (!contribuicoes.some((c) => c.valor > 0) && !iniciais.some((s) => s.valor > 0 && s.taxa > 0)) return null;
+  if (!contribuicoes.some((c) => c.valor > 0) && !iniciais.some((s) => s.valor > 0 && s.taxa > 0) && decimo === null) {
+    return null;
+  }
 
   const saldos = contribuicoes.map(() => 0);
   const estoque = iniciais.map((s) => s.valor);
+  let saldoDecimo = 0;
   for (let mes = 1; mes <= MESES_SIMULACAO_MAX; mes++) {
     let total = 0;
     for (let i = 0; i < saldos.length; i++) {
@@ -324,9 +328,22 @@ function mesesAteOAlvo(
       estoque[i] = estoque[i] * (1 + iniciais[i].taxa);
       total += estoque[i];
     }
+    if (decimo !== null) {
+      saldoDecimo = (decimo.taxa > 0 ? saldoDecimo * (1 + decimo.taxa) : saldoDecimo) + decimo.porMes(mes);
+      total += saldoDecimo;
+    }
     if (arredondar(total) >= valorAlvo) return mes;
   }
   return null;
+}
+
+/**
+ * O 13º indo pra meta desde o mês 1 (degrau 4), rendendo `taxa` — a mesma forma
+ * de `DecimoNaMeta` (marcos.ts), sem a entrada do meio do caminho.
+ */
+export interface DecimoDaMeta {
+  porMes: (mes: number) => number;
+  taxa: number;
 }
 
 const MESES_PT = [
@@ -367,12 +384,16 @@ export function mesEmTexto(hoje: Date, meses: number): string | null {
  * como contando — senão o mesmo real entraria duas vezes.
  *
  * `hoje` entra por parâmetro: o domínio não sabe que horas são.
+ *
+ * `decimo` é o 13º indo pra meta (`decimoNaMeta`, em marcos.ts); ausente, a
+ * conta de sempre.
  */
 export function projetarMeta(
   meta: Meta,
   grupos: Grupo[],
   aporteDoPlanoQueConta: number,
   hoje: Date,
+  decimo: DecimoDaMeta | null = null,
 ): ProjecaoMeta {
   const contribuicoes: Contribuicao[] = grupos
     .filter((g) => g.contaParaMeta)
@@ -386,11 +407,13 @@ export function projetarMeta(
   const valorAlvo = arredondar(Number.isFinite(meta.valorAlvo) ? meta.valorAlvo : 0);
 
   const iniciais = saldosIniciaisDaMeta(meta);
-  const meses = mesesAteOAlvo(contribuicoes, valorAlvo, iniciais);
+  const doDecimo = decimo && { porMes: decimo.porMes, taxa: taxaDoGrupo(decimo.taxa) };
+  const meses = mesesAteOAlvo(contribuicoes, valorAlvo, iniciais, doDecimo);
   const semRendimento = mesesAteOAlvo(
     contribuicoes.map((c) => ({ valor: c.valor, taxa: 0 })),
     valorAlvo,
     iniciais.map((s) => ({ valor: s.valor, taxa: 0 })),
+    doDecimo && { ...doDecimo, taxa: 0 },
   );
 
   return {

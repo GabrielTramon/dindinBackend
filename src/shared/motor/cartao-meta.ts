@@ -60,7 +60,9 @@ function comoChega(noCaminho: MetaNoCaminho, hoje: Date): string {
   } else {
     mensal = "nada entra por mês ainda";
   }
-  return `${base} e ${mensal}.`;
+  // o 13º entra no prazo lá em cima: sem ele aqui, "R$ 300 por mês" não explicaria o mês
+  const decimo = noCaminho.decimoPorAno ? `, mais o 13º (${formatBRL(noCaminho.decimoPorAno)}) todo dezembro` : "";
+  return `${base} e ${mensal}${decimo}.`;
 }
 
 export function cartaoDaMeta(meta: Meta, noCaminho: MetaNoCaminho, hoje: Date): CartaoMeta {

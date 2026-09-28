@@ -105,6 +105,16 @@ export const MAX_GUARDADOS_NA_META = 4;
 /** Rendimento mensal que a pessoa pode declarar num grupo: até 5% a.m. */
 export const MAX_RENDIMENTO_MENSAL = 0.05;
 
+/** Vales na pergunta do salário: um de cada tipo + alguns "outros". */
+export const MAX_BENEFICIOS = 6;
+
+/**
+ * Quanto a empresa pode descontar do salário pelo vale-transporte (Lei
+ * 7.418/85, art. 4º, parágrafo único). Não muda com a tabela do ano, por isso
+ * fica fora de TABELAS_FOLHA.
+ */
+export const DESCONTO_VT_MAXIMO = 0.06;
+
 /**
  * Tabelas da folha de pagamento, em um literal só: atualizar em janeiro é
  * editar dados, nunca lógica.
@@ -150,3 +160,12 @@ export const TABELAS_FOLHA = {
   redutor: { teto: 312.89, a: 978.62, b: 0.133145, ate: 7350 },
   salarioMinimo: 1621.0,
 } as const;
+
+/**
+ * Quando o 13º entra nas projeções: dezembro (mês 11 do Date), no dia 20 — o
+ * prazo da 2ª parcela (Lei 4.749/65). A 1ª parcela pode vir antes, mas contar
+ * tudo em dezembro é o lado seguro: o plano nunca promete um mês antes do
+ * dinheiro existir. Depois do dia 20 de dezembro, o deste ano já caiu (e está
+ * no guardado): o próximo é o do ano que vem.
+ */
+export const DECIMO_TERCEIRO = { mes: 11, diaLimite: 20 } as const;

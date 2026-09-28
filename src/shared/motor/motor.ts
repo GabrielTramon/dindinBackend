@@ -3,6 +3,7 @@
   Altere no frontend e rode `yarn motor:sync` no backend.
 */
 
+import { aplicarBeneficios } from "./beneficios";
 import { categoriaPorSlug, ICONE_PADRAO } from "./categorias";
 import {
   FOLEGO_PISO,
@@ -19,12 +20,15 @@ import {
   TAXA_LIVRE_RISCO_ANUAL,
   proporcaoAporte,
 } from "./config";
+import { entradasDoDecimo, primeiroMesDoDecimo, valorDoDecimoTerceiro, type EntradaExtra } from "./decimo-terceiro";
 import { guardadoNaMetaEfetivo } from "./guardado-meta";
 import { RITMOS } from "./schema";
 import { textos } from "./textos";
 import type {
   Alocacao,
+  DecimoTerceiroNoPlano,
   Degrau,
+  Destino,
   DiagnosticoDividaCara,
   Divida,
   DividaAvaliada,
@@ -73,6 +77,12 @@ export interface OpcoesMotor {
    * corrigir o que o motor devolve.
    */
   aporteEscolhido?: number;
+  /**
+   * A data de hoje, pra saber quando cai o próximo 13º. Sem ela o 13º não entra
+   * nos prazos (o plano continua determinístico e igual ao de antes); a tela
+   * do plano sempre passa.
+   */
+  hoje?: Date;
 }
 
 /**
@@ -86,6 +96,12 @@ export type Cronograma =
       extra: (mes: number) => number;
       /** a partir deste mês `extra` não muda mais */
       regimeAPartirDe: number;
+      /**
+       * de quantos em quantos meses o `extra` se repete no regime; ausente = 1
+       * (constante). Com o 13º é 12: um mês sem ele pode não vencer os juros e
+       * o ano inteiro vencer — a trava dos juros compara um ano com o outro.
+       */
+      ciclo?: number;
     };
 
 const soma = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
@@ -159,13 +175,27 @@ export function simularQuitacaoDetalhada(
   dividas: DividaAvaliada[],
   cronograma: Cronograma,
 ): ResultadoQuitacao {
-  if (dividas.length === 0) return { meses: 0, motivo: null };
+  const { meses, motivo } = simularComSobra(dividas, cronograma);
+  return { meses, motivo };
+}
+
+/** A simulação com o que sobrou do dinheiro no mês em que tudo zerou (o 13º que passou da dívida). */
+interface QuitacaoComSobra extends ResultadoQuitacao {
+  /** o que sobrou do pagamento no mês em que zerou; 0 quando não zerou */
+  sobra: number;
+}
+
+function simularComSobra(dividas: DividaAvaliada[], cronograma: Cronograma): QuitacaoComSobra {
+  if (dividas.length === 0) return { meses: 0, motivo: null, sobra: 0 };
 
   const extraDe =
     typeof cronograma === "number"
       ? () => Math.max(0, cronograma)
       : (mes: number) => Math.max(0, cronograma.extra(mes));
   const regimeAPartirDe = typeof cronograma === "number" ? 1 : cronograma.regimeAPartirDe;
+  const ciclo = typeof cronograma === "number" ? 1 : Math.max(1, Math.trunc(cronograma.ciclo ?? 1));
+  // total no fim de cada mês (índice 0 = antes do mês 1): a trava dos juros compara com `ciclo` meses atrás
+  const historico: number[] = [];
 
   const saldos = dividas.map((d) => d.saldo);
   const taxas = dividas.map((d) => taxaMensal(d.taxaAnual));
@@ -175,6 +205,7 @@ export function simularQuitacaoDetalhada(
 
   for (let mes = 1; mes <= MESES_SIMULACAO_MAX; mes++) {
     const totalAntes = soma(saldos);
+    if (mes === 1) historico.push(totalAntes);
     let pool = extraDe(mes) + reforco;
 
     for (let i = 0; i < saldos.length; i++) {
@@ -200,18 +231,20 @@ export function simularQuitacaoDetalhada(
       }
     }
 
-    if (quitada.every(Boolean)) return { meses: mes, motivo: null };
+    if (quitada.every(Boolean)) return { meses: mes, motivo: null, sobra: Math.max(0, pool) };
 
     const totalDepois = soma(saldos);
-    // saldo explodiu ou parou de cair no regime: o pagamento não vence os juros
-    if (!Number.isFinite(totalDepois)) return { meses: null, motivo: "juros" };
-    if (mes >= regimeAPartirDe && totalDepois >= totalAntes) {
-      return { meses: null, motivo: "juros" };
+    historico.push(totalDepois);
+    // saldo explodiu ou parou de cair no regime: o pagamento não vence os juros.
+    // Com ciclo 1, historico[mes - 1] é o total do começo deste mês (o de sempre)
+    if (!Number.isFinite(totalDepois)) return { meses: null, motivo: "juros", sobra: 0 };
+    if (mes >= regimeAPartirDe + ciclo - 1 && totalDepois >= historico[mes - ciclo]) {
+      return { meses: null, motivo: "juros", sobra: 0 };
     }
   }
 
   // aqui o saldo cai todo mês — só não cabe em MESES_SIMULACAO_MAX
-  return { meses: null, motivo: "horizonte" };
+  return { meses: null, motivo: "horizonte", sobra: 0 };
 }
 
 /**
@@ -234,15 +267,22 @@ export function detalharGastos(gastos: GastoFixo[]): GastoFixoDetalhado[] {
     .sort((a, b) => b.valor - a.valor);
 }
 
-function montarResumo(perfil: Perfil, custoFixo: number, parcelas: number): Resumo {
+/**
+ * `beneficios` é a parte dos vales que paga gasto fixo (aplicarBeneficios): ela
+ * soma do lado de quem entra, e o custo continua cheio. Assim o excedente é
+ * dinheiro de verdade — o que sobra do salário depois do que o vale não pagou —
+ * e a reserva segue medida pelo custo cheio.
+ */
+function montarResumo(perfil: Perfil, custoFixo: number, parcelas: number, beneficios: number): Resumo {
   const custoTotal = arredondar(perfil.custoMoradia + custoFixo + parcelas);
-  const excedente = arredondar(perfil.rendaMensal - custoTotal);
+  const excedente = arredondar(perfil.rendaMensal + beneficios - custoTotal);
   return {
     renda: perfil.rendaMensal,
     custoMoradia: perfil.custoMoradia,
     custoFixo,
     parcelas,
     custoTotal,
+    beneficios,
     excedente,
     taxaExcedente: perfil.rendaMensal > 0 ? arredondar(excedente / perfil.rendaMensal, 4) : 0,
   };
@@ -255,6 +295,8 @@ function montarFolego(custoTotal: number, guardado: number): Folego {
     atual: arredondar(Math.min(guardado, alvo)),
     falta: arredondar(Math.max(0, alvo - guardado)),
     ok: guardado >= alvo,
+    // o prazo sai da projeção do caminho (gerarPlano), que conhece o aporte e o 13º
+    mesesParaCompletar: guardado >= alvo ? 0 : null,
   };
 }
 
@@ -453,11 +495,15 @@ function emReaisInteiros(aporteDe: AporteDe): AporteDe {
 }
 
 interface Projecoes {
+  /** meses até o fôlego fechar; 0 quando já fechou ou quando nada entra (ver mesesAteOFolego) */
+  mesesFolego: number;
   mesesParaQuitarCaras: number | null;
   /** por que as caras não têm prazo; null quando têm (ou quando não há caras) */
   motivoCaras: MotivoSemQuitacao | null;
   mesesParaCompletarReserva: number | null;
   mesesParaQuitarMedias: number | null;
+  /** o que sobra do 13º no mês em que o último passo antes da meta fecha; 0 sem 13º */
+  sobraDoExtraNoFim: number;
 }
 
 /**
@@ -465,10 +511,34 @@ interface Projecoes {
  * zerou o "Guardar") o fôlego nunca fecha, mas também não há nada esperando por
  * ele: as dívidas seguem só com as parcelas desde o primeiro mês. Contar 0 aqui
  * é o que deixa a simulação rodar em vez de dividir por zero.
+ *
+ * Com o 13º (`extra`), soma mês a mês: ele pode fechar o fôlego sozinho, até
+ * com o Guardar em 0%. Sem ele, a conta de sempre.
  */
-function mesesAteOFolego(folego: Folego, aporte0: number): number {
-  if (folego.ok || aporte0 <= 0) return 0;
-  return Math.ceil(folego.falta / aporte0);
+function mesesAteOFolego(folego: Folego, aporte0: number, extra: EntradaExtra | null = null): number {
+  if (folego.ok) return 0;
+  if (extra === null) {
+    if (aporte0 <= 0) return 0;
+    return Math.ceil(folego.falta / aporte0);
+  }
+  let juntou = 0;
+  for (let mes = 1; mes <= MESES_SIMULACAO_MAX; mes++) {
+    juntou += Math.max(0, aporte0) + extra(mes);
+    // a folga cobre o erro de ponto flutuante, como em emReaisInteiros
+    if (juntou + 1e-6 >= folego.falta) return mes;
+  }
+  return 0;
+}
+
+/**
+ * O que o plano juntou até o fim de cada mês enquanto o fôlego era montado, com
+ * o 13º: `[0, mês 1, mês 2…]` até `mesesFolego`. É o que decide quanto passou
+ * do fôlego (e foi pra dívida cara, ou já é reserva).
+ */
+function juntadoNoFolego(aporte0: number, mesesFolego: number, extra: EntradaExtra): number[] {
+  const juntado = [0];
+  for (let mes = 1; mes <= mesesFolego; mes++) juntado.push(juntado[mes - 1] + Math.max(0, aporte0) + extra(mes));
+  return juntado;
 }
 
 /**
@@ -478,21 +548,46 @@ function mesesAteOFolego(folego: Folego, aporte0: number): number {
  * Está separado de projetarCaminho porque os textos precisam rodar a mesma
  * conta nos outros ritmos pra responder "e se eu acelerasse?" — sem isso o
  * plano afirma que renegociar é o único caminho quando não é.
+ *
+ * Com o 13º, ele entra no mês em que cai: primeiro no fôlego (se ainda falta),
+ * o resto na dívida. A trava dos juros passa a olhar um ano inteiro (`ciclo`).
  */
 function projetarCaras(
   aporteDe: AporteDe,
   folego: Folego,
   caras: DividaAvaliada[],
-): ResultadoQuitacao {
+  extra: EntradaExtra | null = null,
+): QuitacaoComSobra {
   const aporte0 = aporteDe(0).valor;
-  const mesesFolego = mesesAteOFolego(folego, aporte0);
-  const extra = (mes: number): number => {
-    if (mes > mesesFolego) return aporteDe(1).valor;
-    const antes = Math.max(0, (mes - 1) * aporte0 - folego.falta);
-    const depois = Math.max(0, mes * aporte0 - folego.falta);
+  const mesesFolego = mesesAteOFolego(folego, aporte0, extra);
+  if (extra === null) {
+    const extraCaras = (mes: number): number => {
+      if (mes > mesesFolego) return aporteDe(1).valor;
+      const antes = Math.max(0, (mes - 1) * aporte0 - folego.falta);
+      const depois = Math.max(0, mes * aporte0 - folego.falta);
+      return arredondar(depois - antes);
+    };
+    return simularComSobra(caras, { extra: extraCaras, regimeAPartirDe: mesesFolego + 1 });
+  }
+  const juntado = juntadoNoFolego(aporte0, mesesFolego, extra);
+  const extraCaras = (mes: number): number => {
+    if (mes > mesesFolego) return aporteDe(1).valor + extra(mes);
+    const antes = Math.max(0, juntado[mes - 1] - folego.falta);
+    const depois = Math.max(0, juntado[mes] - folego.falta);
     return arredondar(depois - antes);
   };
-  return simularQuitacaoDetalhada(caras, { extra, regimeAPartirDe: mesesFolego + 1 });
+  return simularComSobra(caras, { extra: extraCaras, regimeAPartirDe: mesesFolego + 1, ciclo: 12 });
+}
+
+/**
+ * A parte do 13º que sobrou no mês em que um passo fechou — o resto da sobra
+ * é o aporte do mês, que a projeção de sempre não carrega (ela começa o passo
+ * seguinte no mês seguinte). Sem carregar o 13º, R$ 2.500 que quitam os
+ * últimos R$ 500 do cartão sumiriam da conta.
+ */
+function sobraDoExtra(sobra: number, extra: EntradaExtra | null, mes: number | null): number {
+  if (extra === null || mes === null || mes <= 0) return 0;
+  return arredondar(Math.max(0, Math.min(sobra, extra(mes))));
 }
 
 /**
@@ -507,6 +602,10 @@ function projetarCaras(
  *
  * Com aporte zero (o "Guardar" zerado) as dívidas continuam sendo projetadas:
  * a parcela sozinha pode quitar, e dizer que não quita seria mentir.
+ *
+ * `extra` é o 13º (decimo-terceiro.ts): cai inteiro no passo da vez, e o que
+ * passar dele segue pro passo seguinte no mesmo mês. null = a conta de sempre,
+ * sem nenhuma diferença.
  */
 function projetarCaminho(
   aporteDe: AporteDe,
@@ -516,12 +615,15 @@ function projetarCaminho(
   reserva: Reserva,
   caras: DividaAvaliada[],
   medias: DividaAvaliada[],
+  extra: EntradaExtra | null = null,
 ): Projecoes {
   const nada: Projecoes = {
+    mesesFolego: 0,
     mesesParaQuitarCaras: null,
     motivoCaras: null,
     mesesParaCompletarReserva: reserva.ok ? 0 : null,
     mesesParaQuitarMedias: null,
+    sobraDoExtraNoFim: 0,
   };
   if (excedente <= 0) return nada;
 
@@ -531,19 +633,45 @@ function projetarCaminho(
   const aporteDaqui = (d: Degrau) => (temCaras ? aporteDepoisDasCaras : aporteDe)(d).valor;
 
   // 00 — meses até o fôlego fechar, no ritmo do degrau 0
-  const mesesFolego = mesesAteOFolego(folego, aporte0);
+  const mesesFolego = mesesAteOFolego(folego, aporte0, extra);
 
   // 01 — a dívida cara recebe só a sobra do fôlego enquanto ele é montado, depois o ritmo pleno
-  const quitacaoCaras: ResultadoQuitacao = temCaras
-    ? projetarCaras(aporteDe, folego, caras)
-    : { meses: null, motivo: null };
+  const quitacaoCaras: QuitacaoComSobra = temCaras
+    ? projetarCaras(aporteDe, folego, caras, extra)
+    : { meses: null, motivo: null, sobra: 0 };
   const mesesParaQuitarCaras = quitacaoCaras.meses;
+  const sobraCaras = sobraDoExtra(quitacaoCaras.sobra, extra, mesesParaQuitarCaras);
+
+  /*
+    A reserva com o 13º, mês a mês. Até `inicio`: com dívida cara, só o fôlego
+    entrou na reserva (mais a sobra do 13º no mês em que as caras zeraram); sem,
+    tudo o que foi juntado — o fôlego é parte da reserva.
+  */
+  const completarReserva = (inicio: number, porMes: EntradaExtra): { meses: number; sobra: number } | null => {
+    const juntado = temCaras ? folego.falta + sobraCaras : juntadoNoFolego(aporte0, inicio, porMes)[inicio];
+    if (juntado + 1e-6 >= reserva.falta) {
+      const passou = juntado - reserva.falta;
+      return {
+        meses: inicio,
+        sobra: temCaras ? arredondar(Math.max(0, Math.min(passou, sobraCaras))) : sobraDoExtra(passou, porMes, inicio),
+      };
+    }
+    const falta = reserva.falta - juntado;
+    const aporte2 = aporteDaqui(2);
+    let depois = 0;
+    for (let mes = inicio + 1; mes <= MESES_SIMULACAO_MAX; mes++) {
+      depois += Math.max(0, aporte2) + porMes(mes);
+      if (depois + 1e-6 >= falta) return { meses: mes, sobra: sobraDoExtra(depois - falta, porMes, mes) };
+    }
+    return null;
+  };
 
   // 02 — a reserva começa a receber em ritmo pleno depois do fôlego e das dívidas caras
   let mesesParaCompletarReserva: number | null;
+  let sobraReserva = 0;
   if (reserva.ok) {
     mesesParaCompletarReserva = 0;
-  } else {
+  } else if (extra === null) {
     const inicio = temCaras ? mesesParaQuitarCaras : mesesFolego;
     const aporte2 = aporteDaqui(2);
     if (inicio === null || aporte2 <= 0) {
@@ -554,23 +682,47 @@ function projetarCaminho(
       const faltaDepois = Math.max(0, reserva.falta - jaEntrou);
       mesesParaCompletarReserva = inicio + (faltaDepois > 0 ? Math.ceil(faltaDepois / aporte2) : 0);
     }
+  } else {
+    const inicio = temCaras ? mesesParaQuitarCaras : mesesFolego;
+    const comExtra = inicio === null ? null : completarReserva(inicio, extra);
+    mesesParaCompletarReserva = comExtra?.meses ?? null;
+    sobraReserva = comExtra?.sobra ?? 0;
   }
 
   // 03 — a dívida média espera a reserva fechar
   let mesesParaQuitarMedias: number | null = null;
+  let sobraMedias = 0;
   if (medias.length > 0 && mesesParaCompletarReserva !== null) {
     const inicio = mesesParaCompletarReserva;
-    mesesParaQuitarMedias = simularQuitacao(medias, {
-      extra: (mes) => (mes > inicio ? aporteDaqui(3) : 0),
-      regimeAPartirDe: inicio + 1,
-    });
+    if (extra === null) {
+      mesesParaQuitarMedias = simularQuitacao(medias, {
+        extra: (mes) => (mes > inicio ? aporteDaqui(3) : 0),
+        regimeAPartirDe: inicio + 1,
+      });
+    } else {
+      // no mês em que a reserva fecha, o que sobrou do 13º já vai pra dívida
+      const r = simularComSobra(medias, {
+        extra: (mes) => (mes > inicio ? aporteDaqui(3) + extra(mes) : mes === inicio ? sobraReserva : 0),
+        regimeAPartirDe: inicio + 1,
+        ciclo: 12,
+      });
+      mesesParaQuitarMedias = r.meses;
+      const doMes = r.meses === null ? 0 : r.meses > inicio ? extra(r.meses) : sobraReserva;
+      sobraMedias = r.meses === null ? 0 : arredondar(Math.max(0, Math.min(r.sobra, doMes)));
+    }
   }
 
+  // o último passo antes da meta decide o que do 13º já chega nela
+  const sobraDoExtraNoFim =
+    medias.length > 0 ? sobraMedias : !reserva.ok ? sobraReserva : temCaras ? sobraCaras : 0;
+
   return {
+    mesesFolego,
     mesesParaQuitarCaras,
     motivoCaras: quitacaoCaras.motivo,
     mesesParaCompletarReserva,
     mesesParaQuitarMedias,
+    sobraDoExtraNoFim,
   };
 }
 
@@ -592,13 +744,14 @@ function procurarRitmoQueResolve(
   aporteDeHoje: AporteDe,
   folego: Folego,
   caras: DividaAvaliada[],
+  extra: EntradaExtra | null,
 ): { ritmo: Ritmo; meses: number } | null {
   const aporteHoje = aporteDeHoje(1).valor;
   for (const outro of RITMOS) {
     if (outro === ritmoAtual && !aporteEditado) continue;
     const aporteDe = emReaisInteiros(aportePorDegrau(excedente, renda, outro));
     if (aporteDe(0).valor <= 0 || aporteDe(1).valor <= aporteHoje) continue;
-    const { meses } = projetarCaras(aporteDe, folego, caras);
+    const { meses } = projetarCaras(aporteDe, folego, caras, extra);
     if (meses !== null) return { ritmo: outro, meses };
   }
   return null;
@@ -622,15 +775,36 @@ function projetarGuardandoTudo(
   aporteDeHoje: AporteDe,
   folego: Folego,
   caras: DividaAvaliada[],
+  extra: EntradaExtra | null,
 ): { valor: number; meses: number } | null {
   const tudo = emReaisInteiros(aportePorDegrau(excedente, renda, ritmo, excedente));
   const valor = tudo(1).valor;
   if (valor <= 0 || valor <= aporteDeHoje(1).valor) return null;
-  const { meses } = projetarCaras(tudo, folego, caras);
+  const { meses } = projetarCaras(tudo, folego, caras, extra);
   return meses === null ? null : { valor, meses };
 }
 
-/** Perfil entra, plano sai. Determinístico. */
+/**
+ * Em que passo o próximo 13º cai: o que estiver em aberto no começo daquele
+ * mês. Os prazos são acumulados (contam deste mês), então basta compará-los.
+ */
+function destinoDoDecimo(
+  mes: number,
+  folego: Folego,
+  reserva: Reserva,
+  caras: DividaAvaliada[],
+  medias: DividaAvaliada[],
+  projecoes: Projecoes,
+): Destino {
+  const aberto = (meses: number | null) => meses === null || mes <= meses;
+  if (!folego.ok && aberto(projecoes.mesesFolego)) return "folego";
+  if (caras.length > 0 && aberto(projecoes.mesesParaQuitarCaras)) return "divida_cara";
+  if (!reserva.ok && aberto(projecoes.mesesParaCompletarReserva)) return "reserva";
+  if (medias.length > 0 && aberto(projecoes.mesesParaQuitarMedias)) return "divida_media";
+  return "metas";
+}
+
+/** Perfil entra, plano sai. Determinístico (a data, quando entra, vem em `opcoes.hoje`). */
 export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
   const taxaLivre = opcoes.taxaLivreRisco ?? TAXA_LIVRE_RISCO_ANUAL;
 
@@ -643,7 +817,9 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
   const gastosFixos = detalharGastos(perfil.gastosFixos);
   const custoFixo = arredondar(soma(gastosFixos.map((g) => g.valor)));
 
-  const resumo = montarResumo(perfil, custoFixo, parcelas);
+  // o vale entra só até o valor dos gastos que ele paga: o resto fica no cartão
+  const beneficios = aplicarBeneficios(perfil.beneficios, perfil.gastosFixos);
+  const resumo = montarResumo(perfil, custoFixo, parcelas, beneficios.pagaGastos);
   // o que já foi separado pra meta não é reserva: o mesmo real não conta duas vezes
   const guardadoNaMeta = guardadoNaMetaEfetivo(perfil);
   const guardadoLivre = arredondar(Math.max(0, perfil.guardado - guardadoNaMeta));
@@ -680,6 +856,11 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
 
   const { alocacoes } = alocar(aporte, folego, reserva, caras, medias, perfil);
 
+  // o 13º: fora do mês a mês, dentro dos prazos (decimo-terceiro.ts). Sem data, sem 13º nos prazos
+  const valorDecimo = valorDoDecimoTerceiro(perfil);
+  const primeiroMesDecimo = opcoes.hoje ? primeiroMesDoDecimo(opcoes.hoje) : null;
+  const extra = modoCorte ? null : entradasDoDecimo({ valor: valorDecimo, primeiroMes: primeiroMesDecimo });
+
   const projecoes = projetarCaminho(
     aporteDe,
     aporteDepoisDasCaras,
@@ -688,8 +869,27 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
     reserva,
     caras,
     medias,
+    extra,
   );
   reserva.mesesParaCompletar = projecoes.mesesParaCompletarReserva;
+  // sem aporte e sem 13º o fôlego não fecha (null); o caminho e o cartão do topo leem daqui
+  if (!folego.ok) {
+    folego.mesesParaCompletar =
+      !modoCorte && (aporteDe(0).valor > 0 || extra !== null) ? projecoes.mesesFolego : null;
+  }
+
+  const decimoTerceiro: DecimoTerceiroNoPlano | null =
+    valorDecimo > 0
+      ? {
+          valor: valorDecimo,
+          primeiroMes: primeiroMesDecimo,
+          destino:
+            primeiroMesDecimo === null || modoCorte
+              ? null
+              : destinoDoDecimo(primeiroMesDecimo, folego, reserva, caras, medias, projecoes),
+          sobraParaAMeta: projecoes.sobraDoExtraNoFim,
+        }
+      : null;
 
   // "renegociar é o único caminho" só vale quando nenhum ritmo resolve E nem
   // guardar tudo o que sobra resolve. Em modo corte não há ritmo que resolva
@@ -704,6 +904,7 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
       aporteDe,
       folego,
       caras,
+      extra,
     );
     diagnosticoCaras = {
       motivo: projecoes.motivoCaras ?? "juros",
@@ -711,7 +912,7 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
       mesesNoRitmoQueResolve: saida?.meses ?? null,
       guardandoTudo: saida
         ? null
-        : projetarGuardandoTudo(resumo.excedente, perfil.rendaMensal, ritmo, aporteDe, folego, caras),
+        : projetarGuardandoTudo(resumo.excedente, perfil.rendaMensal, ritmo, aporteDe, folego, caras, extra),
     };
   }
 
@@ -747,6 +948,7 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
   return {
     perfil,
     resumo,
+    beneficios,
     gastosFixos,
     modoCorte,
     corte,
@@ -760,6 +962,7 @@ export function gerarPlano(perfil: Perfil, opcoes: OpcoesMotor = {}): Plano {
     folego,
     reserva,
     guardadoNaMeta,
+    decimoTerceiro,
     dividas,
     diagnosticoCaras,
     proximosPassos: textos.proximosPassos(contexto),

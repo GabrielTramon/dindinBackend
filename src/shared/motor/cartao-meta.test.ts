@@ -82,10 +82,57 @@ describe("cartão 'Sua meta' — o print do dono", () => {
     );
   });
 
-  it("o topo avisa que o prazo dele é o do passo de agora", () => {
+  /*
+    A frase "Esse é o passo de agora" não bastou: o dono leu "por 1 mês" como o
+    prazo da meta de novo (28/09/2026, com a meta em 4 meses logo abaixo). Agora
+    cada prazo do topo diz do que é, e o da meta é o mesmo de "Sua meta".
+  */
+  it("o topo dá nome ao prazo de agora e mostra o da meta, o mesmo de 'Sua meta'", () => {
+    const grupos = [guardar(2544, 0.01)];
+    const { plano, caminho, cartao: c } = cartao(PRINT, grupos);
+    const r = respostaDoPlano(plano, {
+      projecaoMeta: caminho.meta!.projecao,
+      simulacoes: simularRitmos(PRINT),
+      grupos,
+      hoje: HOJE,
+    });
+    if (r.modo !== "plano" || r.tempo.tipo !== "prazo") throw new Error("esperava prazo");
+    expect(r.tempo.texto).toBe("Fôlego e reserva prontos em 1 mês · até outubro de 2026");
+    expect(r.etapas).toEqual({
+      passo: "Fôlego e reserva prontos",
+      meta: {
+        nome: "Liberdade financeira",
+        texto: "em 8 meses · até maio de 2027",
+        meses: 8,
+        mes: "maio de 2027",
+        rotuloSr: "Liberdade financeira: 8 meses, até maio de 2027",
+      },
+    });
+    // o mesmo prazo e o mesmo mês do cartão "Sua meta"
+    expect(c.titulo).toBe(`Chega em 8 meses`);
+    expect(c.mes).toBe(r.etapas?.meta.mes);
+    // com as duas linhas, a frase de antes sai
+    expect(r.depois).toBeUndefined();
+  });
+
+  it("dá nome a cada passo: dívida (com gênero), reserva", () => {
+    const comMeta = (perfil: Perfil) => {
+      const plano = gerarPlano(perfil);
+      const caminho = caminhoDoPlano(plano, { hoje: HOJE });
+      const r = respostaDoPlano(plano, { projecaoMeta: caminho.meta!.projecao, simulacoes: [], hoje: HOJE });
+      return r.modo === "plano" ? r.etapas?.passo : undefined;
+    };
+    const base: Perfil = { ...PRINT, guardado: 1000, aporteEscolhido: undefined, meta: { tipo: "viagem", valorAlvo: 6000 } };
+    expect(comMeta({ ...base, dividas: [{ tipo: "rotativo", saldo: 2000 }] })).toBe("Cartão quitado");
+    expect(comMeta({ ...base, dividas: [{ tipo: "outra", saldo: 2000, taxaAnual: 0.9 }] })).toBe("Dívida quitada");
+    expect(comMeta({ ...base, gastosFixos: [{ categoria: "mercado", valor: 2000 }] })).toBe("Reserva completa");
+  });
+
+  it("sem a projeção da meta, o topo cai na frase de antes", () => {
     const plano = gerarPlano(PRINT);
     const r = respostaDoPlano(plano, { simulacoes: simularRitmos(PRINT), hoje: HOJE });
     if (r.modo !== "plano") throw new Error("esperava plano");
+    expect(r.etapas).toBeUndefined();
     expect(r.depois).toBe("Esse é o passo de agora. Depois, o plano segue pra Liberdade financeira.");
   });
 

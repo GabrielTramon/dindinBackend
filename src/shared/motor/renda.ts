@@ -3,6 +3,7 @@
   Altere no frontend e rode `yarn motor:sync` no backend.
 */
 
+import { descontoDoValeTransporte } from "./beneficios";
 import { TABELAS_FOLHA } from "./config";
 import { arredondar } from "./format";
 
@@ -13,10 +14,14 @@ import { arredondar } from "./format";
   sabe o líquido de cabeça — e `Perfil.rendaMensal` é líquido, é o número que
   toda a cascata usa. Aqui é só a conta fiscal do mês normal: bruto − INSS − IRRF.
 
-  O que NÃO entra: vale-transporte, plano de saúde, vale-refeição, empréstimo
-  consignado. Eles saem do holerite, mas no dindin são gasto fixo (o catálogo já
-  tem `transporte_publico` e `plano_saude`). Descontar aqui E lá contaria o mesmo
-  dinheiro duas vezes e derrubaria o excedente sem que ninguém visse por quê.
+  O que NÃO entra: plano de saúde, empréstimo consignado, a parte do VR que a
+  empresa desconta. Eles saem do holerite, mas no dindin são gasto fixo (o
+  catálogo tem `plano_saude`). Descontar aqui E lá contaria o mesmo dinheiro
+  duas vezes e derrubaria o excedente sem que ninguém visse por quê.
+
+  A exceção é o vale-transporte, quando a pessoa diz que recebe: aí o vale paga
+  o transporte da lista (beneficios.ts) e o que sai do salário é o desconto de
+  até 6% — que entra aqui, senão o plano ganharia o VT inteiro de graça.
 
   Também não entra 13º, férias, hora extra nem rescisão: o motor planeja o mês
   normal, e a tela diz isso com todas as letras.
@@ -29,7 +34,15 @@ export interface Holerite {
   bruto: number;
   inss: number;
   irrf: number;
+  /** desconto do vale-transporte; só existe quando a pessoa informou o VT */
+  valeTransporte?: number;
   liquido: number;
+}
+
+/** O que sai do holerite além de INSS e IRRF. */
+export interface DescontosFolha {
+  /** o vale-transporte do mês, em reais; o desconto é até 6% do bruto (descontoDoValeTransporte) */
+  valeTransporte?: number;
 }
 
 /**
@@ -143,10 +156,18 @@ export function calcularIRRF(rendimentoTributavelMensal: number, deducoes: Deduc
  *
  * Bruto abaixo do salário mínimo calcula igual (estágio e jovem aprendiz são a
  * persona do produto); quem avisa é a tela, lendo TABELAS_FOLHA.salarioMinimo.
+ *
+ * O desconto do VT não mexe no INSS nem no IRRF (não é dedução de nenhum dos
+ * dois) e só aparece no holerite de quem informou o vale: sem ele, a forma do
+ * resultado é a de sempre.
  */
-export function brutoParaLiquido(bruto: number, deducoes: DeducoesIRRF = {}): Holerite {
+export function brutoParaLiquido(bruto: number, deducoes: DeducoesIRRF = {}, descontos: DescontosFolha = {}): Holerite {
   const valor = arredondar(valorValido(bruto));
   const inss = calcularINSS(valor);
   const irrf = calcularIRRF(valor, deducoes);
-  return { bruto: valor, inss, irrf, liquido: arredondar(valor - inss - irrf) };
+  if (!(valorValido(descontos.valeTransporte) > 0)) {
+    return { bruto: valor, inss, irrf, liquido: arredondar(valor - inss - irrf) };
+  }
+  const valeTransporte = descontoDoValeTransporte(valor, valorValido(descontos.valeTransporte));
+  return { bruto: valor, inss, irrf, valeTransporte, liquido: arredondar(valor - inss - irrf - valeTransporte) };
 }

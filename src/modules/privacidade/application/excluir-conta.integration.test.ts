@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PrismaDatabase, PrismaTransactionManager } from '../../../shared/infra/database/prisma';
 import { FixedClock } from '../../../shared/infra/in-memory/doubles';
 import { UuidGenerator } from '../../../shared/infra/system';
+import { CATEGORIAS } from '../../../shared/motor/categorias';
 import { startTestDatabase, type TestDatabase } from '../../../test/test-database';
 import { PrismaCategoriasRepository } from '../../categorias/infra';
 import { PrismaCheckInsRepository } from '../../check-ins/infra';
@@ -170,7 +171,7 @@ describe('ExcluirContaUseCase — só no Postgres', () => {
     await db.reset();
   });
 
-  it('por tabela: zero linhas da pessoa, as da outra intactas, nenhuma órfã e o catálogo com as 24 categorias', async () => {
+  it('por tabela: zero linhas da pessoa, as da outra intactas, nenhuma órfã e o catálogo inteiro', async () => {
     const m = montar();
     const ana = await criarContaCompleta(m, ANA);
     const bruno = await criarContaCompleta(m, BRUNO);
@@ -182,7 +183,7 @@ describe('ExcluirContaUseCase — só no Postgres', () => {
     expect(await linhasDa(ana.subscriberId)).toEqual(NENHUMA_LINHA);
     expect(await linhasDa(bruno.subscriberId)).toEqual(UMA_CONTA_COMPLETA);
     // o banco inteiro tem só o que é do Bruno, mais o catálogo: nada da Ana ficou pendurado em outro dono
-    expect(await linhasNoBanco()).toEqual({ ...UMA_CONTA_COMPLETA, catalogo: 24 });
+    expect(await linhasNoBanco()).toEqual({ ...UMA_CONTA_COMPLETA, catalogo: CATEGORIAS.length });
   });
 
   it('erro no último passo desfaz a transação inteira: nada é apagado, e a exclusão seguinte funciona', async () => {

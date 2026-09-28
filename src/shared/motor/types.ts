@@ -78,6 +78,22 @@ export interface Divida {
   taxaAnual?: number;
 }
 
+/** Os vales que a pessoa recebe além do salário. O catálogo (o que cada um paga) mora em beneficios.ts. */
+export type TipoBeneficio = "refeicao" | "alimentacao" | "transporte" | "outro";
+
+/**
+ * Um vale ou benefício do mês: VR, VA, VT… Não é dinheiro na conta: é um
+ * cartão que só paga certos gastos. Por isso entra no plano só até o valor
+ * dos gastos fixos que ele paga (aplicarBeneficios).
+ */
+export interface Beneficio {
+  tipo: TipoBeneficio;
+  /** nome dado pela pessoa — obrigatório quando o tipo é "outro" */
+  nome?: string;
+  /** quanto vem por mês, em reais */
+  valor: number;
+}
+
 /** Um gasto fixo do mês, já categorizado. */
 export interface GastoFixo {
   /** slug do catálogo em categorias.ts; SLUG_OUTRO quando a pessoa criou a categoria */
@@ -109,6 +125,17 @@ export interface Perfil {
   dependentes?: number;
   /** competência da tabela que gerou o líquido, ex.: "2026-01" — em janeiro avisa que mudou */
   competenciaTabela?: string;
+  /**
+   * Vales do mês (VR, VA, VT…). Ausente = não respondeu, igual a nenhum. Pagam
+   * gasto fixo e nunca viram dinheiro guardado: ver aplicarBeneficios.
+   */
+  beneficios?: Beneficio[];
+  /**
+   * Usar o 13º no plano (CLT: "usar no plano?"; PJ: "o contrato paga?").
+   * Ausente = não respondeu, igual a não. Informal não é perguntado e o motor
+   * ignora. Ver decimo-terceiro.ts.
+   */
+  decimoTerceiro?: boolean;
   /** ausente = "equilibrado" */
   ritmo?: Ritmo;
   /**
@@ -178,7 +205,13 @@ export interface Resumo {
   /** soma das parcelas de dívida informadas */
   parcelas: number;
   custoTotal: number;
-  /** renda − custoTotal; pode ser negativo */
+  /**
+   * a parte dos vales que paga gasto fixo (BeneficiosDoMes.pagaGastos); 0 sem
+   * vale. O custo continua cheio — é ele que dimensiona a reserva, e quem perde
+   * o emprego perde o vale junto.
+   */
+  beneficios: number;
+  /** renda + beneficios − custoTotal; pode ser negativo */
   excedente: number;
   /** excedente / renda, entre −∞ e 1 */
   taxaExcedente: number;
@@ -189,6 +222,12 @@ export interface Folego {
   atual: number;
   falta: number;
   ok: boolean;
+  /**
+   * meses até fechar com o aporte do plano (e o 13º, quando entra); 0 quando
+   * já está pronto, null quando não fecha (nada entra) ou em modo corte. É o
+   * único lugar que conta isso: o caminho e o cartão do topo leem daqui.
+   */
+  mesesParaCompletar: number | null;
 }
 
 export interface Reserva {
@@ -268,9 +307,43 @@ export interface DiagnosticoDividaCara {
   guardandoTudo: { valor: number; meses: number } | null;
 }
 
+/**
+ * O 13º no plano. Entra INTEIRO na cascata no mês em que cai (dezembro), no
+ * passo da vez — o que passar segue pro passo seguinte. Nunca no aporte do mês:
+ * ele não existe nos outros onze.
+ */
+export interface DecimoTerceiroNoPlano {
+  /** o 13º estimado, líquido, em reais */
+  valor: number;
+  /**
+   * o mês da projeção em que o próximo chega (1 = este mês); depois, a cada 12.
+   * null quando o plano foi gerado sem data (`OpcoesMotor.hoje`): aí ele não
+   * entra nos prazos.
+   */
+  primeiroMes: number | null;
+  /** o passo da vez quando o próximo chega; null sem data ou em modo corte */
+  destino: Destino | null;
+  /**
+   * o que sobra do 13º no mês em que o último passo antes da meta fecha: esse
+   * dinheiro já começa a meta, naquele mês
+   */
+  sobraParaAMeta: number;
+}
+
+/** Os vales do mês depois de pagar os gastos fixos que cada um paga. */
+export interface BeneficiosDoMes {
+  /** tudo o que a pessoa informou */
+  total: number;
+  /** a parte que paga gasto fixo — é o que entra no plano */
+  pagaGastos: number;
+  /** o que fica no cartão sem gasto fixo pra pagar: não vira dinheiro guardado */
+  semUso: number;
+}
+
 export interface Plano {
   perfil: Perfil;
   resumo: Resumo;
+  beneficios: BeneficiosDoMes;
   /** gastos fixos do maior pro menor, prontos pra tela */
   gastosFixos: GastoFixoDetalhado[];
   modoCorte: boolean;
@@ -293,6 +366,8 @@ export interface Plano {
    * guardado). Fica FORA do fôlego e da reserva: 0 quando nada foi pra meta
    */
   guardadoNaMeta: number;
+  /** null quando a pessoa não usa o 13º no plano (ou é informal, ou ele dá 0) */
+  decimoTerceiro: DecimoTerceiroNoPlano | null;
   dividas: QuadroDividas;
   /**
    * só existe quando há dívida cara sem prazo fora do modo corte; null quando

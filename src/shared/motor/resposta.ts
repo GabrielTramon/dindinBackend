@@ -6,11 +6,12 @@
 import { MARGEM_MINIMA_CORTE, MAX_RENDIMENTO_MENSAL } from "./config";
 import { outrosPotesQueCabem, pctDe, pctDoGuardar, repartirEmReaisInteiros, type SimulacaoRitmo } from "./divisor";
 import { metaComGuardadoEfetivo } from "./guardado-meta";
-import { mesEstimado } from "./marcos";
+import { decimoNosProximosMeses, entradasDoDecimo } from "./decimo-terceiro";
+import { decimoNaMeta, mesEstimado } from "./marcos";
 import { rotuloMeta } from "./metas-catalogo";
 import { projetarMeta, type Grupo, type ProjecaoMeta } from "./organizacao";
 import { LIVRE_MINIMO, semPrazoCarasDoPlano, textos } from "./textos";
-import type { DividaAvaliada, Meta, Plano, Ritmo, TipoDivida } from "./types";
+import type { Destino, DividaAvaliada, Meta, Plano, Ritmo, TipoDivida } from "./types";
 import { arredondar, formatBRL, formatMeses, formatPct } from "./format";
 
 /*
@@ -101,6 +102,32 @@ export interface SegmentoRitmo {
   descricaoSr: string;
 }
 
+/**
+ * O tempo do cartão em duas linhas, antes do degrau 4 e com meta: o passo de
+ * agora COM NOME ("Fôlego pronto em 1 mês") e a meta com o prazo DELA — o
+ * mesmo de "Sua meta" e do caminho.
+ *
+ * Existe porque "Montar seu fôlego · por 1 mês" era lido como "1 mês até a
+ * meta", mesmo com a frase "Esse é o passo de agora" embaixo (o dono leu
+ * errado duas vezes, em 28/09/2026). Número sem nome ao lado vira o número
+ * da meta na cabeça de quem lê.
+ */
+export interface EtapasResposta {
+  /** o fim do passo de agora: "Fôlego pronto", "Cartão quitado", "Reserva completa" */
+  passo: string;
+  meta: {
+    /** "Liberdade financeira" */
+    nome: string;
+    /** "em 4 meses · até janeiro de 2027", "já garantida", "sem prazo nesse ritmo" */
+    texto: string;
+    /** prazo acumulado, contando deste mês; null sem prazo */
+    meses: number | null;
+    /** "janeiro de 2027"; null sem prazo */
+    mes: string | null;
+    rotuloSr: string;
+  };
+}
+
 /** O valor que o passo de agora quer alcançar: "Meta: R$ 40.000", "Total: R$ 3.000". */
 export interface AlvoResposta {
   /** "Meta", "Total", "Reserva", "Fôlego" */
@@ -128,12 +155,22 @@ export interface RespostaPlano {
   pctTexto: string;
   tempo: TempoResposta;
   /**
-   * antes do degrau 4, com meta: o prazo do topo é o do passo de agora, não o
-   * da meta — "Esse é o passo de agora. Depois, o plano segue pra Viagem."
+   * antes do degrau 4, com meta e com a projeção dela: o tempo em duas linhas,
+   * o passo de agora com nome e a meta com o prazo dela (EtapasResposta)
+   */
+  etapas?: EtapasResposta;
+  /**
+   * antes do degrau 4, com meta mas SEM a projeção dela (quem chama não passou
+   * `projecaoMeta`): "Esse é o passo de agora. Depois, o plano segue pra Viagem."
    */
   depois?: string;
   /** quantos meses o rendimento dos potes adianta a meta; ausente quando não adianta */
   rendimentoAdianta?: number;
+  /**
+   * quando o 13º entra no plano: "Os prazos já contam com o 13º: em dezembro de
+   * 2026, cerca de R$ 2.500 vão pra reserva." Ausente sem 13º.
+   */
+  decimo?: string;
   /** o que o Guardar deixa livre, em reais inteiros (fecha a soma com `valorMes`); menos de R$ 1 conta como 0 */
   livre: number;
   /** "Os outros R$ 360 são seus, sem culpa." — já descontados TODOS os potes; "Tudo o que sobra vai pros seus potes…" quando nada fica fora */
@@ -178,7 +215,12 @@ export type Resposta = RespostaPlano | RespostaCorte;
 export interface OpcoesResposta {
   /** ausente = a meta do perfil do plano */
   meta?: Meta;
-  /** a projeção da meta que o resto da tela usa (com os potes); ausente = projetada só com o plano */
+  /**
+   * a projeção da meta que o resto da tela usa (`caminhoDoPlano(...).meta`, com
+   * os potes), em QUALQUER degrau: no 4 ela é o tempo do cartão; antes, a
+   * segunda linha do tempo (EtapasResposta). Ausente = no degrau 4, projetada
+   * só com o plano; antes dele, o cartão cai na frase `depois`.
+   */
   projecaoMeta?: ProjecaoMeta | null;
   /** `simularRitmos(perfil)` — os três ritmos, sem a escolha manual */
   simulacoes: SimulacaoRitmo[];
@@ -278,9 +320,69 @@ function rotuloAte(plano: Plano, meta: Meta | undefined): string {
   }
 }
 
+/** O prazo do fôlego é o do motor (com o 13º, quando entra) — o mesmo do caminho. */
+/** "Cartão quitado", "Dívida quitada" — o fim de uma dívida só, com o gênero do nome. */
+function quitado(nome: string): string {
+  return `${maiuscula(semArtigo(nome))} ${nome.startsWith("a ") ? "quitada" : "quitado"}`;
+}
+
+/**
+ * O fim do passo de agora, com nome: é o que vai do lado do prazo quando a
+ * meta aparece embaixo. Mesma regra do rótulo do leitor de tela (`rotuloAte`):
+ * fôlego e reserva no mesmo mês viram um passo só.
+ */
+function nomeDoPasso(plano: Plano): string {
+  const { caras, medias } = plano.dividas;
+  switch (plano.degrau) {
+    case 0:
+      return !plano.reserva.ok &&
+        plano.reserva.mesesParaCompletar !== null &&
+        plano.reserva.mesesParaCompletar === mesesDoFolego(plano)
+        ? "Fôlego e reserva prontos"
+        : "Fôlego pronto";
+    case 1:
+      return caras.length === 1 ? quitado(NOME_CURTO_DIVIDA[caras[0].tipo]) : "Dívidas caras quitadas";
+    case 2:
+      return "Reserva completa";
+    case 3:
+      return medias.length === 1 ? quitado(NOME_CURTO_DIVIDA[medias[0].tipo]) : "Dívidas quitadas";
+    case 4:
+      return "Meta";
+  }
+}
+
+/** A segunda linha do tempo: a meta com o prazo dela, lido da projeção do caminho. */
+function etapasDoPlano(plano: Plano, meta: Meta, projecao: ProjecaoMeta): EtapasResposta {
+  const nome = rotuloMeta(meta);
+  const passo = nomeDoPasso(plano);
+  if (projecao.meses === 0) {
+    return {
+      passo,
+      meta: { nome, texto: "já garantida", meses: 0, mes: null, rotuloSr: `${nome}: já garantida com o que você guardou` },
+    };
+  }
+  if (projecao.meses === null || projecao.mesEstimado === null) {
+    return {
+      passo,
+      meta: { nome, texto: "sem prazo nesse ritmo", meses: null, mes: null, rotuloSr: `${nome}: sem prazo nesse ritmo` },
+    };
+  }
+  const prazo = formatMeses(projecao.meses);
+  return {
+    passo,
+    meta: {
+      nome,
+      texto: `em ${prazo} · até ${projecao.mesEstimado}`,
+      meses: projecao.meses,
+      mes: projecao.mesEstimado,
+      rotuloSr: `${nome}: ${prazo}, até ${projecao.mesEstimado}`,
+    },
+  };
+}
+
 function mesesDoFolego(plano: Plano): number | null {
   if (plano.folego.ok) return 0;
-  return plano.aporte > 0 ? Math.ceil(plano.folego.falta / plano.aporte) : null;
+  return plano.folego.mesesParaCompletar;
 }
 
 /** A frase curta do prazo pro aria-live e pros segmentos: "o cartão zera em 3 meses". */
@@ -364,7 +466,8 @@ function tempoDoPlano(
     meta !== undefined &&
     ((projecaoMeta?.aporteMensal ?? 0) > 0 || (projecaoMeta?.meses ?? null) !== null);
 
-  if (plano.aporte <= 0 && !potesLevamAMeta) {
+  // com o 13º no plano, o Guardar em 0% ainda anda: uma vez por ano, em dezembro
+  if (plano.aporte <= 0 && !potesLevamAMeta && entradasDoDecimo(plano.decimoTerceiro) === null) {
     return {
       tempo: {
         tipo: "parado",
@@ -376,7 +479,8 @@ function tempoDoPlano(
   }
 
   if (plano.degrau === 4 && !meta) {
-    const valor = plano.aporte * 12;
+    // o 13º que cai nos próximos 12 meses entra junto
+    const valor = plano.aporte * 12 + decimoNosProximosMeses(plano.decimoTerceiro, 12);
     return {
       tempo: {
         tipo: "ano",
@@ -402,7 +506,12 @@ function tempoDoPlano(
       meses = plano.dividas.mesesParaQuitarMedias;
       break;
     case 4:
-      meses = projecaoMeta !== undefined && projecaoMeta !== null ? projecaoMeta.meses : meta ? projetarMeta(meta, [], plano.aporte, hoje).meses : null;
+      meses =
+        projecaoMeta !== undefined && projecaoMeta !== null
+          ? projecaoMeta.meses
+          : meta
+            ? projetarMeta(meta, [], plano.aporte, hoje, decimoNaMeta(plano)).meses
+            : null;
       break;
   }
 
@@ -461,6 +570,36 @@ function tempoDoPlano(
       rotuloSr: `${ate}: ${texto.toLowerCase()}`,
     },
   };
+}
+
+/** "pro cartão", "pra reserva", "pra Viagem" — pra onde vai o 13º quando cai. */
+function praOnde(destino: Destino, plano: Plano, meta: Meta | undefined): string {
+  const contrair = (s: string) => s.replace(/^o /, "pro ").replace(/^a /, "pra ").replace(/^os /, "pros ").replace(/^as /, "pras ");
+  switch (destino) {
+    case "folego":
+      return "pro fôlego";
+    case "divida_cara":
+      return plano.dividas.caras.length === 1 ? contrair(NOME_CURTO_DIVIDA[plano.dividas.caras[0].tipo]) : "pras dívidas caras";
+    case "reserva":
+      return "pra reserva";
+    case "divida_media":
+      return plano.dividas.medias.length === 1 ? contrair(NOME_CURTO_DIVIDA[plano.dividas.medias[0].tipo]) : "pras dívidas";
+    case "metas":
+      return meta ? `pra ${rotuloMeta(meta)}` : "pro que você guarda";
+  }
+}
+
+/**
+ * A linha do 13º no cartão: os prazos de cima já contam com ele, e a pessoa
+ * precisa saber de onde veio a diferença. Sem data (primeiroMes null) ele não
+ * entrou nos prazos, então não há o que dizer.
+ */
+function linhaDoDecimo(plano: Plano, meta: Meta | undefined, hoje: Date): string | undefined {
+  const d = plano.decimoTerceiro;
+  if (d === null || d.primeiroMes === null || d.destino === null) return undefined;
+  const mes = mesEstimado(hoje, d.primeiroMes - 1);
+  if (mes === null) return undefined;
+  return `Os prazos já contam com o 13º: em ${mes}, cerca de ${formatBRL(d.valor)} vão ${praOnde(d.destino, plano, meta)}.`;
 }
 
 /** Pra onde vai o "Guardar" este mês, em poucas palavras: "cartão", "fôlego, reserva e metas". */
@@ -537,7 +676,15 @@ export function respostaDoPlano(plano: Plano, opcoes: OpcoesResposta): Resposta 
   const livre = semLivre ? 0 : livreInteiro;
   // a mesma % que o divisor mostra na linha do Guardar (resíduo de centavos conta como 100%)
   const pct = pctDoGuardar(plano.aporte, excedente);
-  const { tempo, acao } = tempoDoPlano(plano, meta, opcoes.projecaoMeta, hoje);
+  const doPlano = tempoDoPlano(plano, meta, opcoes.projecaoMeta, hoje);
+  const { acao } = doPlano;
+  // antes da meta, com a projeção dela: o prazo de agora ganha nome e a meta vem embaixo
+  const etapas =
+    plano.degrau < 4 && meta && opcoes.projecaoMeta ? etapasDoPlano(plano, meta, opcoes.projecaoMeta) : undefined;
+  const tempo: TempoResposta =
+    etapas && doPlano.tempo.tipo === "prazo"
+      ? { ...doPlano.tempo, texto: `${etapas.passo} em ${formatMeses(doPlano.tempo.meses)} · até ${doPlano.tempo.mes}` }
+      : doPlano.tempo;
   const personalizado = plano.perfil.aporteEscolhido !== undefined;
 
   const grupos = opcoes.grupos ?? [];
@@ -547,11 +694,13 @@ export function respostaDoPlano(plano: Plano, opcoes: OpcoesResposta): Resposta 
     // os outros potes de cada ritmo são os que a troca de ritmo gravaria: encolhidos quando não cabem
     const potes = outrosPotesQueCabem(s.plano, grupos) ?? potesSemGuardar;
     // o "Guardar" de cada ritmo rende a mesma taxa do de hoje: a taxa é do pote, não do valor
+    // o 13º de cada ritmo vai pra meta com a mesma regra do caminho (decimoNaMeta)
+    const decimo = decimoNaMeta(s.plano, grupos);
     const projecao =
       s.plano.degrau === 4 && meta
         ? sistema?.contaParaMeta
-          ? projetarMeta(meta, [...potes, { ...sistema, valor: s.plano.aporte }], 0, hoje)
-          : projetarMeta(meta, potes, s.plano.aporte, hoje)
+          ? projetarMeta(meta, [...potes, { ...sistema, valor: s.plano.aporte }], 0, hoje, decimo)
+          : projetarMeta(meta, potes, s.plano.aporte, hoje, decimo)
         : undefined;
     const t = tempoDoPlano(s.plano, meta, projecao, hoje).tempo;
     return {
@@ -579,6 +728,7 @@ export function respostaDoPlano(plano: Plano, opcoes: OpcoesResposta): Resposta 
       ? opcoes.projecaoMeta.semRendimento - tempo.meses
       : 0;
   const alvo = alvoDoPlano(plano, meta);
+  const decimo = linhaDoDecimo(plano, meta, hoje);
 
   /*
     O fecho fala do que fica fora de TODOS os potes, não só do Guardar: com os
@@ -610,7 +760,12 @@ export function respostaDoPlano(plano: Plano, opcoes: OpcoesResposta): Resposta 
     pctTexto: `${pct}% do que sobra`,
     tempo,
     ...(adianta > 0 ? { rendimentoAdianta: adianta } : {}),
-    ...(plano.degrau < 4 && meta ? { depois: `Esse é o passo de agora. Depois, o plano segue pra ${rotuloMeta(meta)}.` } : {}),
+    ...(decimo ? { decimo } : {}),
+    ...(etapas
+      ? { etapas }
+      : plano.degrau < 4 && meta
+        ? { depois: `Esse é o passo de agora. Depois, o plano segue pra ${rotuloMeta(meta)}.` }
+        : {}),
     livre,
     fecho,
     esteMes: esteMesDoPlano(plano, meta),
@@ -629,8 +784,11 @@ export function respostaDoPlano(plano: Plano, opcoes: OpcoesResposta): Resposta 
 export const textosDivisor = {
   titulo: "Divida o que sobra",
   /** "R$ 2.800 − R$ 1.600 de contas = R$ 1.200 pra dividir" */
-  equacao: (renda: number, contas: number, base: number) =>
-    `${formatBRL(renda)} − ${formatBRL(contas)} de contas = ${formatBRL(base)} pra dividir`,
+  /** `vales` é a parte dos vales que paga gasto fixo (Resumo.beneficios); 0 some da frase */
+  equacao: (renda: number, contas: number, base: number, vales = 0) =>
+    vales > 0
+      ? `${formatBRL(renda)} + ${formatBRL(vales)} de vale − ${formatBRL(contas)} de contas = ${formatBRL(base)} pra dividir`
+      : `${formatBRL(renda)} − ${formatBRL(contas)} de contas = ${formatBRL(base)} pra dividir`,
   ajuda: "Tudo em porcentagem: se o salário mudar, a divisão acompanha.",
   /** subtítulo do Guardar: "este mês: cartão" */
   guardarEsteMes: (esteMes: string) => `este mês: ${esteMes}`,
@@ -679,3 +837,26 @@ export const textosPote = {
       ? `Escolha um nome. Ele começa com ${pct}% e você ajusta depois.`
       : `Escolha um nome. Ele começa com ${formatBRL(valor)} e você ajusta depois.`,
 } as const;
+
+/*
+  As frases do simulador "E se você mantiver?" (simulador.ts). É um simulador,
+  não o plano: diz isso, e diz que valor de hoje não é valor de daqui a 10 anos.
+*/
+export const textosSimulador = {
+  titulo: "E se você mantiver?",
+  ajuda: "Mude o valor, o rendimento ou o tempo pra comparar. Nada aqui muda o seu plano.",
+  /** "Em 3 anos" — o rótulo do resultado do tempo escolhido */
+  em: (meses: number) => (meses > 0 ? `Em ${formatMeses(meses)}` : "Escolha um tempo"),
+  /** "R$ 90.000 guardados + R$ 7.200 de rendimento" */
+  detalhe: (guardado: number, rendimento: number) =>
+    rendimento >= 1
+      ? `${formatBRL(guardado)} guardados + ${formatBRL(rendimento)} de rendimento`
+      : `${formatBRL(guardado)} guardados, sem rendimento`,
+  /** o 13º entra na conta como no plano, e dá pra tirar */
+  decimo: (valor: number) => `Somar o 13º (${formatBRL(valor)} todo dezembro)`,
+  /** antes de a dívida zerar, o valor do mês paga ela: a conta é do que você separa */
+  divida: "Enquanto a dívida não zera, esse valor vai pra ela. A conta abaixo é o total que você separa.",
+  semRendimento: "Sem rendimento, é só o que você guarda. Se esse dinheiro rende, diga quanto ao mês pra ver a diferença.",
+  inflacao: "Valores de hoje, sem descontar a inflação: daqui a alguns anos, o mesmo dinheiro compra menos.",
+  voltarAoPlano: (valor: number) => `Voltar pro valor do plano (${formatBRL(valor)})`,
+};

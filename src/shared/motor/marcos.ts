@@ -4,6 +4,7 @@
 */
 
 import { MAX_RENDIMENTO_MENSAL, MESES_SIMULACAO_MAX } from "./config";
+import { entradasDoDecimo, type EntradaExtra } from "./decimo-terceiro";
 import { rotuloMeta } from "./metas-catalogo";
 import { metaComGuardadoEfetivo, saldosIniciaisDaMeta } from "./guardado-meta";
 import { gerarPlano } from "./motor";
@@ -94,11 +95,24 @@ const emCentavosReais = (valor: number): number =>
   Number.isFinite(valor) ? arredondar(Math.max(0, Math.round(arredondar(valor) * 100)) / 100) : 0;
 
 /**
+ * O 13º na meta: `porMes` a partir do mês `inicio + 1` (antes disso ele está
+ * na cascata, como o aporte), mais `entrada` no próprio mês `inicio` — o que
+ * sobrou dele quando o último passo fechou. Rende `taxa`: a do "Guardar", que
+ * é onde ele cai.
+ */
+export interface DecimoNaMeta {
+  porMes: EntradaExtra;
+  entrada: number;
+  taxa: number;
+}
+
+/**
  * Mês a mês, como `projetarMeta`, mas o aporte do plano só entra a partir do
  * mês `inicio + 1` (antes disso ele está pagando dívida ou enchendo a reserva)
  * e rende `taxaPlano` a partir daí. A ordem das contribuições e das somas é a
  * mesma de `projetarMeta`: com `inicio` 0 e taxa 0 o resultado é idêntico, bit
- * a bit.
+ * a bit. O 13º (`decimo`) é um saldo à parte, somado por último — sem ele, a
+ * conta de sempre.
  */
 function mesesAteOAlvo(
   grupos: { valor: number; taxa: number }[],
@@ -107,17 +121,24 @@ function mesesAteOAlvo(
   valorAlvo: number,
   taxaPlano = 0,
   iniciais: { valor: number; taxa: number }[] = [],
+  decimo: DecimoNaMeta | null = null,
 ): number | null {
   if (valorAlvo <= 0) return 0;
   // o que já estava guardado pra meta pode bastar sozinho: meta paga no mês 0
   if (arredondar(iniciais.reduce((acc, s) => acc + s.valor, 0)) >= valorAlvo) return 0;
-  if (!grupos.some((c) => c.valor > 0) && doPlano <= 0 && !iniciais.some((s) => s.valor > 0 && s.taxa > 0)) {
+  if (
+    !grupos.some((c) => c.valor > 0) &&
+    doPlano <= 0 &&
+    !iniciais.some((s) => s.valor > 0 && s.taxa > 0) &&
+    decimo === null
+  ) {
     return null;
   }
 
   const saldos = grupos.map(() => 0);
   const estoque = iniciais.map((s) => s.valor);
   let saldoPlano = 0;
+  let saldoDecimo = 0;
   for (let mes = 1; mes <= MESES_SIMULACAO_MAX; mes++) {
     let total = 0;
     for (let i = 0; i < saldos.length; i++) {
@@ -132,6 +153,11 @@ function mesesAteOAlvo(
     if (doPlano > 0) {
       saldoPlano = (taxaPlano > 0 ? saldoPlano * (1 + taxaPlano) : saldoPlano) + (mes > inicio ? doPlano : 0);
       total += saldoPlano;
+    }
+    if (decimo !== null) {
+      const entra = mes > inicio ? decimo.porMes(mes) : mes === inicio ? decimo.entrada : 0;
+      saldoDecimo = (decimo.taxa > 0 ? saldoDecimo * (1 + decimo.taxa) : saldoDecimo) + entra;
+      total += saldoDecimo;
     }
     if (arredondar(total) >= valorAlvo) return mes;
   }
@@ -148,7 +174,10 @@ function mesesAteOAlvo(
  * meta (o do "Guardar", quando ele está marcado pra meta); ausente = não rende.
  *
  * No degrau 4 (`inicio` 0, sem taxa do plano) dá EXATAMENTE `projetarMeta(meta,
- * grupos, aporteNasMetas, hoje)`.
+ * grupos, aporteNasMetas, hoje)` — com o 13º, `projetarMeta` com o mesmo `decimo`.
+ *
+ * `decimo` é o 13º indo pra meta (DecimoNaMeta); com `inicio` null ele nunca
+ * chega, como o resto do plano.
  */
 export function projetarMetaNoCaminho(
   meta: Meta,
@@ -157,6 +186,7 @@ export function projetarMetaNoCaminho(
   inicio: number | null,
   hoje: Date,
   taxaDoPlano = 0,
+  decimo: DecimoNaMeta | null = null,
 ): ProjecaoMeta {
   const contribuicoes = grupos
     .filter((g) => g.contaParaMeta)
@@ -170,7 +200,8 @@ export function projetarMetaNoCaminho(
   const valorAlvo = arredondar(Number.isFinite(meta.valorAlvo) ? meta.valorAlvo : 0);
 
   const iniciais = saldosIniciaisDaMeta(meta);
-  const meses = mesesAteOAlvo(contribuicoes, doPlano, comeco, valorAlvo, taxaPlano, iniciais);
+  const doDecimo = inicio === null || decimo === null ? null : { ...decimo, taxa: taxaDoGrupo(decimo.taxa) };
+  const meses = mesesAteOAlvo(contribuicoes, doPlano, comeco, valorAlvo, taxaPlano, iniciais, doDecimo);
   const semRendimento = mesesAteOAlvo(
     contribuicoes.map((c) => ({ valor: c.valor, taxa: 0 })),
     doPlano,
@@ -178,6 +209,7 @@ export function projetarMetaNoCaminho(
     valorAlvo,
     0,
     iniciais.map((s) => ({ valor: s.valor, taxa: 0 })),
+    doDecimo && { ...doDecimo, taxa: 0 },
   );
 
   return {
@@ -235,8 +267,10 @@ export function projetarMetaDoPlano(
   hoje: Date,
 ): ProjecaoMeta {
   const aporte = aportePrevistoNasMetas(plano, grupos);
-  if (plano.degrau === 4) return projetarMetaNoCaminho(meta, grupos, aporte, inicio, hoje);
   const sistema = grupos.find((g) => g.doSistema);
+  if (plano.degrau === 4) {
+    return projetarMetaNoCaminho(meta, grupos, aporte, inicio, hoje, 0, decimoNaMeta(plano, grupos));
+  }
   // a parte do plano chega na meta DENTRO do "Guardar": rende a taxa dele, como o
   // recado da tela promete. O "entra na meta" do Guardar não vale antes do degrau 4
   // (ele está no valor padrão, desligado) — não é ele que decide a taxa aqui
@@ -248,7 +282,30 @@ export function projetarMetaDoPlano(
     inicio,
     hoje,
     taxa,
+    decimoNaMeta(plano, grupos),
   );
+}
+
+/**
+ * O 13º do plano a caminho da meta: cada um depois do início dela, mais o que
+ * sobrou do que caiu no mês em que o último passo fechou. null sem 13º.
+ *
+ * Ele cai no "Guardar" e rende a taxa dele — a mesma regra do aporte do plano:
+ * antes do degrau 4, sempre (o dinheiro chega na meta DENTRO do Guardar); no
+ * degrau 4, só quando o Guardar conta na meta (aí ele é um pote). Desmarcado,
+ * o aporte entra sem render, e o 13º junto.
+ */
+export function decimoNaMeta(plano: Plano, grupos: Grupo[] = []): DecimoNaMeta | null {
+  const porMes = entradasDoDecimo(plano.decimoTerceiro);
+  if (porMes === null || plano.decimoTerceiro === null) return null;
+  const sistema = grupos.find((g) => g.doSistema);
+  const rende = plano.degrau !== 4 || sistema?.contaParaMeta === true;
+  // no degrau 4 não há passo antes: o 13º vai direto pra meta desde o mês 1
+  return {
+    porMes,
+    entrada: plano.degrau === 4 ? 0 : plano.decimoTerceiro.sobraParaAMeta,
+    taxa: rende ? taxaDoGrupo(sistema?.rendimentoMensal) : 0,
+  };
 }
 
 interface MarcoBruto {
@@ -293,6 +350,8 @@ export interface MetaNoCaminho {
   inicio: number | null;
   /** quanto do plano entra por mês a partir do início; 0 = só os potes */
   aporteDoPlano: number;
+  /** o 13º que entra nela todo dezembro (a partir do início); ausente = não entra */
+  decimoPorAno?: number;
 }
 
 export interface CaminhoDoPlano {
@@ -320,7 +379,7 @@ export function caminhoDoPlano(plano: Plano, opcoes: OpcoesMarcos): CaminhoDoPla
     brutos.push({
       id: "folego",
       rotulo: "Fôlego pronto",
-      meses: plano.aporte > 0 ? Math.ceil(folego.falta / plano.aporte) : null,
+      meses: folego.mesesParaCompletar,
     });
   }
   if (dividas.caras.length > 0) {
@@ -353,6 +412,10 @@ export function caminhoDoPlano(plano: Plano, opcoes: OpcoesMarcos): CaminhoDoPla
       projecao,
       inicio: inicioMeta,
       aporteDoPlano: inicioMeta === null ? 0 : aportePrevistoNasMetas(plano, grupos),
+      // o mesmo 13º que a projeção somou (decimoNaMeta): a frase de "como chega" precisa dele
+      ...(inicioMeta !== null && decimoNaMeta(plano, grupos) !== null && plano.decimoTerceiro
+        ? { decimoPorAno: plano.decimoTerceiro.valor }
+        : {}),
     };
     // meta que o já guardado paga sozinho não é passo pendente: vira um marco feito, lá embaixo
     if (projecao.meses !== 0) brutos.push({ id: "meta", rotulo: rotuloMeta(meta), meses: projecao.meses });

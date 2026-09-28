@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { CATEGORIAS } from '../shared/motor/categorias';
 import { executarFluxoCompleto, montarAmbiente, PASSOS_DO_FLUXO, type AmbienteE2E } from './e2e-fluxo';
 import { startTestDatabase, type TestDatabase } from './test-database';
 
@@ -63,8 +64,8 @@ describe('e2e (Postgres)', () => {
       itensGrupo: await p.itemGrupo.count({ where: deOutros }),
     }).toEqual({ profiles: 0, gastosFixos: 0, dividas: 0, plans: 0, goals: 0, checkIns: 0, grupos: 0, itensGrupo: 0 });
 
-    // as 24 do catálogo, e nenhuma personalizada (a "Clube" da Ana foi junto)
-    expect(await p.categoriaGastoFixo.count()).toBe(24);
+    // o catálogo inteiro, e nenhuma personalizada (a "Clube" da Ana foi junto)
+    expect(await p.categoriaGastoFixo.count()).toBe(CATEGORIAS.length);
     expect(await p.categoriaGastoFixo.count({ where: { subscriberId: { not: null } } })).toBe(0);
     expect(await p.categoriaGastoFixo.count({ where: { slug: null } })).toBe(0);
   }, 120_000);

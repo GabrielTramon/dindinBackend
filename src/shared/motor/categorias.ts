@@ -77,6 +77,8 @@ export const CATEGORIAS: readonly Categoria[] = [
   { slug: "escola", nome: "Escola", grupo: "educacao", icone: "School" },
   { slug: "curso", nome: "Curso", grupo: "educacao", icone: "BookOpen" },
 
+  // o almoço do dia de trabalho: é o gasto que o vale-refeição paga (beneficios.ts)
+  { slug: "refeicao", nome: "Refeição fora", grupo: "pessoal", icone: "Utensils" },
   { slug: "celular", nome: "Celular", grupo: "pessoal", icone: "Smartphone" },
   { slug: "streaming", nome: "Streaming e assinaturas", grupo: "pessoal", icone: "Tv" },
   { slug: "pet", nome: "Pet", grupo: "pessoal", icone: "PawPrint" },

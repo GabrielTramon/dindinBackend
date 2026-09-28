@@ -412,8 +412,18 @@ const sobreOsRitmos = `Nenhum ritmo sugere guardar tudo o que sobra. O Acelerado
 /** As frases de "Sua meta" nos detalhes, com a projeção do caminho. */
 const metaDetalhe = {
   /** o que vem depois de "Chega em 2 anos, por volta de março de 2028" */
-  comoChega: (o: { degrauDeMetas: boolean; aporteMensal: number; inicio: number | null; temPotes: boolean }) => {
-    if (o.degrauDeMetas) return `, com ${formatBRL(o.aporteMensal)} por mês.`;
+  comoChega: (o: {
+    degrauDeMetas: boolean;
+    aporteMensal: number;
+    inicio: number | null;
+    temPotes: boolean;
+    /** o 13º que entra nela todo dezembro; ausente = não entra */
+    decimo?: number;
+  }) => {
+    if (o.degrauDeMetas) {
+      const decimo = o.decimo ? ` e o 13º (${formatBRL(o.decimo)}) todo dezembro` : "";
+      return `, com ${formatBRL(o.aporteMensal)} por mês${decimo}.`;
+    }
     // um passo de antes sem prazo: o plano nunca chega na meta nessa conta
     if (o.inicio === null) {
       return ": só com os potes marcados. O que o plano guarda entra quando as prioridades de cima tiverem prazo.";
@@ -423,11 +433,12 @@ const metaDetalhe = {
       : ": o plano começa a juntar pra ela quando as prioridades de cima fecharem.";
   },
   /** "Entra nesta conta: o que você já guardou pra ela, Investimento e o que o plano guarda, quando…" */
-  entraNaConta: (potes: string[], planoEntra: boolean, planoDepois: boolean, jaGuardado = false) => {
+  entraNaConta: (potes: string[], planoEntra: boolean, planoDepois: boolean, jaGuardado = false, decimo = false) => {
     const partes = [
       ...(jaGuardado ? ["o que você já guardou pra ela (rendendo desde já)"] : []),
       ...potes,
       ...(planoEntra ? ["o que o plano guarda"] : []),
+      ...(decimo ? ["o seu 13º"] : []),
     ];
     return `Entra nesta conta: ${listar(partes)}${planoEntra && planoDepois ? ", quando as prioridades de cima fecharem" : ""}.`;
   },
@@ -437,4 +448,13 @@ const metaDetalhe = {
   garantida: "Já garantida: o que você guardou pra ela cobre o valor inteiro. O que o plano guarda por mês pode ir pra uma meta nova (troque em Ajustar respostas).",
 };
 
-export const textos = { decisao, proximosPassos, alocacao, corte, metaNaoFecha, sobreOsRitmos, metaDetalhe };
+/** "Seu mês em números" com vale: o que entra soma a parte do vale que paga gasto. */
+const vales = {
+  notaEntra: (pagaGastos: number) =>
+    `Entra = o que cai na conta + ${formatBRL(pagaGastos)} de vale, a parte que paga gasto fixo.`,
+  /** o que fica no cartão: dá pra usar no dia a dia, mas não vira dinheiro guardado */
+  semUso: (valor: number) =>
+    `${formatBRL(valor)} de vale ficam no cartão sem gasto fixo pra pagar. Use no dia a dia: esse valor não entra no que você guarda.`,
+};
+
+export const textos = { decisao, proximosPassos, alocacao, corte, metaNaoFecha, sobreOsRitmos, metaDetalhe, vales };

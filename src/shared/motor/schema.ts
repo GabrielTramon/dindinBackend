@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { SLUGS_CATEGORIA, SLUG_OUTRO } from "./categorias";
-import { MAX_DIVIDAS, MAX_GASTOS_FIXOS, MAX_GUARDADOS_NA_META, MAX_RENDIMENTO_MENSAL } from "./config";
+import { MAX_BENEFICIOS, MAX_DIVIDAS, MAX_GASTOS_FIXOS, MAX_GUARDADOS_NA_META, MAX_RENDIMENTO_MENSAL } from "./config";
 
 /*
   Validação do perfil. Mensagens em pt-BR porque aparecem na tela.
@@ -26,6 +26,7 @@ export const TIPOS_DIVIDA = [
 export const MORADIAS_SEM_CUSTO = ["pais", "propria"] as const;
 
 export const RITMOS = ["leve", "equilibrado", "acelerado"] as const;
+export const TIPOS_BENEFICIO = ["refeicao", "alimentacao", "transporte", "outro"] as const;
 export const RENDAS_INFORMADAS = ["bruta", "liquida"] as const;
 export const METAS_TIPO = [
   "carro",
@@ -150,6 +151,26 @@ export const gastoFixoSchema = z
   });
 
 /*
+  Um vale do mês. Valor 0 não serve: "não recebo" é tirar a linha. O "outro"
+  precisa de nome pelo mesmo motivo do gasto "outro" — sem ele a linha não diz
+  nada. Um de cada tipo do catálogo quem garante é a tela, não o schema: um
+  perfil com dois VR (colado de outro lugar) continua valendo, os dois somam.
+*/
+export const beneficioSchema = z
+  .object({
+    tipo: z.enum(TIPOS_BENEFICIO, { error: "Escolha o tipo do benefício" }),
+    nome: z.string().trim().max(40, { error: "No máximo 40 caracteres" }).optional(),
+    valor: z
+      .number({ error: "Informe quanto vem por mês" })
+      .positive({ error: "O valor precisa ser maior que zero" })
+      .max(100_000, { error: "Confere esse valor? Está muito alto" }),
+  })
+  .refine((b) => b.tipo !== "outro" || (b.nome !== undefined && b.nome.length > 0), {
+    error: "Dê um nome pra esse benefício",
+    path: ["nome"],
+  });
+
+/*
   Campos opcionais NUNCA levam `.default()`: o default apareceria em todo perfil
   validado, mudaria o snapshot de quem já tem plano gravado e criaria uma versão
   nova pra base inteira sem ninguém ter mudado nada.
@@ -172,6 +193,11 @@ export const perfilSchema = z.object({
     .max(10, { error: "No máximo 10" })
     .optional(),
   competenciaTabela: z.string().optional(),
+  beneficios: z
+    .array(beneficioSchema)
+    .max(MAX_BENEFICIOS, { error: `No máximo ${MAX_BENEFICIOS} benefícios` })
+    .optional(),
+  decimoTerceiro: z.boolean().optional(),
   ritmo: z.enum(RITMOS).optional(),
   aporteEscolhido: z
     .number()

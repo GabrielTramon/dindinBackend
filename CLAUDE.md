@@ -69,6 +69,12 @@ O perfil ganhou renda informada, salário bruto, dependentes, competência da ta
 - O que prova tudo isso é o contrato do repositório (roda em memória e no Postgres) mais o passo do e2e que vai do PATCH até o `inputSnap` da versão gravada.
 - **Meta**: um objeto só, em colunas do `Profile` (`meta_tipo`, `meta_nome`, `meta_valor_alvo`) + `meta_guardados` (JSONB, desde 25/09/2026): os **potes** do que a pessoa JÁ tem guardado e pôs na meta (`meta.guardados`, `[{ id, nome, valor, rendimentoMensal? }]`, até 4). Ausente = não respondeu; `[]` = "é a minha reserva" — os dois voltam como entraram. Validados pelo `metaSchema` do motor + 2 casas no valor e 4 no rendimento; **sem trava contra o `guardado`** (o motor limita na leitura, `guardadoNaMetaEfetivo`). Vivem dentro da meta: PATCH com `meta` troca a meta inteira (sem `guardados` = sem potes) e meta ausente grava a coluna como NULL (`Prisma.DbNull`). A exportação LGPD leva os potes **sem o id** (no perfil e na entrada/resultado de cada versão do plano), como os grupos.
 
+### Vales e 13º (28/09/2026): só no motor, ainda não no perfil gravado
+
+O `Perfil` do motor ganhou `beneficios` (vales: `[{ tipo, nome?, valor }]`) e `decimoTerceiro` (boolean) — ver dindinFrontend/CLAUDE.md, "Vales e 13º". **O módulo `perfil` ainda não grava nenhum dos dois**: hoje o frontend não manda o perfil pra API, então nada se perde. Quando mandar, são as oito listas da seção acima + uma migration (`beneficios` JSONB, `decimo_terceiro` boolean, os dois NULL sem DEFAULT). Plano gerado no servidor não conta o 13º nos prazos enquanto `gerarPlano` não receber `{ hoje }` (o `Clock`).
+
+A categoria `refeicao` ("Refeição fora", o gasto que o VR paga) entrou pela migration `20260928000000_categoria_refeicao`. Os testes contam o catálogo por `CATEGORIAS.length`, nunca por número fixo.
+
 ### Nomes
 
 - **Vocabulário do negócio em pt-BR**: `Categoria`, `Perfil`, `GastoFixo`, `Meta`, `renomear`, `consumirLinkMagico`, `CriarCategoriaPersonalizadaUseCase`.
