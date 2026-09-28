@@ -127,6 +127,11 @@ export interface RespostaPlano {
   /** "70% do que sobra" */
   pctTexto: string;
   tempo: TempoResposta;
+  /**
+   * antes do degrau 4, com meta: o prazo do topo é o do passo de agora, não o
+   * da meta — "Esse é o passo de agora. Depois, o plano segue pra Viagem."
+   */
+  depois?: string;
   /** quantos meses o rendimento dos potes adianta a meta; ausente quando não adianta */
   rendimentoAdianta?: number;
   /** o que o Guardar deixa livre, em reais inteiros (fecha a soma com `valorMes`); menos de R$ 1 conta como 0 */
@@ -605,6 +610,7 @@ export function respostaDoPlano(plano: Plano, opcoes: OpcoesResposta): Resposta 
     pctTexto: `${pct}% do que sobra`,
     tempo,
     ...(adianta > 0 ? { rendimentoAdianta: adianta } : {}),
+    ...(plano.degrau < 4 && meta ? { depois: `Esse é o passo de agora. Depois, o plano segue pra ${rotuloMeta(meta)}.` } : {}),
     livre,
     fecho,
     esteMes: esteMesDoPlano(plano, meta),
@@ -635,6 +641,9 @@ export const textosDivisor = {
   /** digitou acima do que cabe no pote */
   maximoAgora: (pctMax: number) =>
     pctMax >= 100 ? "O máximo é 100%: é tudo o que sobra." : `O máximo agora é ${pctMax}%: o resto já está nos outros potes.`,
+  /** digitou em R$ acima do que cabe no pote */
+  maximoEmReais: (max: number, tudo: boolean) =>
+    tudo ? `O máximo é ${formatBRL(max)}: é tudo o que sobra.` : `O máximo agora é ${formatBRL(max)}: o resto já está nos outros potes.`,
   /** dado antigo que passa da sobra (a sobra diminuiu) */
   passouDaSobra: (excesso: number) => `Seus potes passam do que sobra em ${formatBRL(excesso)}.`,
   ajustar: "Ajustar proporcionalmente",

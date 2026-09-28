@@ -225,8 +225,7 @@ export function aportePrevistoNasMetas(plano: Plano, grupos: Grupo[] = []): numb
  *   como pote; desmarcado, o aporte entra sem rendimento).
  * - Antes, o Guardar sai da lista de potes (o dinheiro dele ainda vai pra
  *   dívida ou reserva) e a parte do plano entra a partir de `inicio`, com o
- *   rendimento do Guardar quando ele está marcado pra meta — o mesmo que ele
- *   renderia no degrau 4.
+ *   rendimento do Guardar — o mesmo que ele renderia no degrau 4.
  */
 export function projetarMetaDoPlano(
   plano: Plano,
@@ -238,7 +237,10 @@ export function projetarMetaDoPlano(
   const aporte = aportePrevistoNasMetas(plano, grupos);
   if (plano.degrau === 4) return projetarMetaNoCaminho(meta, grupos, aporte, inicio, hoje);
   const sistema = grupos.find((g) => g.doSistema);
-  const taxa = sistema?.contaParaMeta ? taxaDoGrupo(sistema.rendimentoMensal) : 0;
+  // a parte do plano chega na meta DENTRO do "Guardar": rende a taxa dele, como o
+  // recado da tela promete. O "entra na meta" do Guardar não vale antes do degrau 4
+  // (ele está no valor padrão, desligado) — não é ele que decide a taxa aqui
+  const taxa = taxaDoGrupo(sistema?.rendimentoMensal);
   return projetarMetaNoCaminho(
     meta,
     grupos.filter((g) => !g.doSistema),

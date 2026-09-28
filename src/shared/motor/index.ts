@@ -116,3 +116,5 @@ export {
   NOME_GUARDADO_PADRAO,
 } from "./guardado-meta";
 export type { OpcoesGuardadoNaMeta } from "./guardado-meta";
+export { cartaoDaMeta } from "./cartao-meta";
+export type { CartaoMeta } from "./cartao-meta";
