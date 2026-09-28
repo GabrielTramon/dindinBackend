@@ -1,0 +1,176 @@
+import { ensure, isValidMoney } from '../../../shared/domain/guards';
+
+/*
+  O check-in do mês: o que realmente aconteceu com o dinheiro. Um por
+  subscriber por competência ("2026-09").
+
+  Abrir (o job do dia 1), marcar como enviado (o e-mail saiu) e responder (a
+  pessoa contou) são passos separados: dá pra saber quem recebeu e não
+  respondeu. Responder de novo no mesmo mês corrige a resposta.
+
+  QUAL MÊS: o job do dia 1 abre a competência do mês QUE ACABOU
+  (competenciaAnterior(agora)) — a pergunta é "como foi setembro?" no dia 1º
+  de outubro. Competência futura nunca é aceita, nem pra abrir nem pra responder;
+  o mês corrente é aceito (a pessoa pode responder antes do e-mail chegar).
+*/
+
+export const FUSO_DO_PRODUTO = 'America/Sao_Paulo';
+
+const COMPETENCIA = /^(\d{4})-(0[1-9]|1[0-2])$/;
+
+/** A mesma mensagem no domínio, no caso de uso e no schema HTTP. */
+export const MENSAGEM_COMPETENCIA_INVALIDA = 'Competência no formato AAAA-MM';
+
+export function competenciaValida(competencia: string): boolean {
+  const m = COMPETENCIA.exec(competencia);
+  return m !== null && Number(m[1]) >= 2020 && Number(m[1]) <= 2100;
+}
+
+/**
+ * O mês de uma data no fuso do Brasil. 02:00 UTC do dia 1 ainda é o mês
+ * anterior em São Paulo — o job não pode abrir o mês errado.
+ */
+export function competenciaDe(data: Date, timeZone = FUSO_DO_PRODUTO): string {
+  const partes = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit' }).formatToParts(data);
+  const ano = partes.find((p) => p.type === 'year')?.value;
+  const mes = partes.find((p) => p.type === 'month')?.value;
+  return `${ano}-${mes}`;
+}
+
+/** O mês anterior ao de `data`, no fuso do produto: o que o job do dia 1 abre. */
+export function competenciaAnterior(data: Date, timeZone = FUSO_DO_PRODUTO): string {
+  const [ano, mes] = competenciaDe(data, timeZone).split('-').map(Number) as [number, number];
+  return mes === 1 ? `${ano - 1}-12` : `${ano}-${String(mes - 1).padStart(2, '0')}`;
+}
+
+/**
+ * Quanto o fuso está à frente do UTC naquele instante, em milissegundos
+ * (São Paulo: −3 h). Formatar o instante no fuso e reler os números como se
+ * fossem UTC dá exatamente a diferença — sem tabela de offset escrita à mão,
+ * que envelhece quando o país mexe no horário de verão.
+ */
+function deslocamentoDoFuso(instante: Date, timeZone: string): number {
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(instante);
+  const n = (tipo: string) => Number(partes.find((p) => p.type === tipo)?.value);
+  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - instante.getTime();
+}
+
+/** A meia-noite do dia 1 daquele mês no fuso, como instante UTC. */
+function meiaNoiteDoMes(ano: number, mes: number, timeZone: string): Date {
+  const palpite = Date.UTC(ano, mes - 1, 1);
+  // duas passadas: a primeira corrige com o deslocamento do palpite, a segunda
+  // com o do instante já corrigido — é o que acerta a borda de horário de verão
+  const corrigido = palpite - deslocamentoDoFuso(new Date(palpite), timeZone);
+  return new Date(palpite - deslocamentoDoFuso(new Date(corrigido), timeZone));
+}
+
+/**
+ * O PRIMEIRO INSTANTE da competência seguinte, no fuso do produto:
+ * "2026-08" → 2026-09-01T03:00:00.000Z (meia-noite de 1º de setembro em São Paulo).
+ *
+ * É um limite superior EXCLUSIVO: quem pergunta "o que valia durante agosto?"
+ * consulta `criadoEm < fimDaCompetencia('2026-08')`. Nada de fim de mês
+ * calculado à mão — 23:59:59.999 perde o que foi gravado no último
+ * milissegundo do mês, e "dia 31" erra em fevereiro.
+ *
+ * Mora aqui porque `check-ins` é quem conhece competência e FUSO_DO_PRODUTO;
+ * `planos` recebe o instante pronto (o grafo não deixa planos depender daqui).
+ */
+export function fimDaCompetencia(competencia: string, timeZone = FUSO_DO_PRODUTO): Date {
+  ensure(competenciaValida(competencia), 'competencia', MENSAGEM_COMPETENCIA_INVALIDA);
+  const [ano, mes] = competencia.split('-').map(Number) as [number, number];
+  return mes === 12 ? meiaNoiteDoMes(ano + 1, 1, timeZone) : meiaNoiteDoMes(ano, mes + 1, timeZone);
+}
+
+function ensureNaoFutura(competencia: string, agora: Date): void {
+  // "AAAA-MM" compara certo como texto
+  ensure(competencia <= competenciaDe(agora), 'competencia', 'Esse mês ainda não chegou');
+}
+
+export interface RespostaCheckIn {
+  rendaReal: number;
+  gastoReal: number;
+  guardadoReal: number;
+}
+
+export interface CheckInProps {
+  id: string;
+  subscriberId: string;
+  competencia: string;
+  rendaReal: number | null;
+  gastoReal: number | null;
+  guardadoReal: number | null;
+  enviadoEm: Date | null;
+  respondidoEm: Date | null;
+  criadoEm: Date;
+}
+
+export class CheckIn {
+  private constructor(private props: CheckInProps) {}
+
+  static abrir(input: { id: string; subscriberId: string; competencia: string; agora: Date }): CheckIn {
+    ensure(competenciaValida(input.competencia), 'competencia', MENSAGEM_COMPETENCIA_INVALIDA);
+    ensureNaoFutura(input.competencia, input.agora);
+    return new CheckIn({
+      id: input.id,
+      subscriberId: input.subscriberId,
+      competencia: input.competencia,
+      rendaReal: null,
+      gastoReal: null,
+      guardadoReal: null,
+      enviadoEm: null,
+      respondidoEm: null,
+      criadoEm: input.agora,
+    });
+  }
+
+  static restaurar(props: CheckInProps): CheckIn {
+    return new CheckIn(structuredClone(props));
+  }
+
+  get id() { return this.props.id; }
+  get subscriberId() { return this.props.subscriberId; }
+  get competencia() { return this.props.competencia; }
+  get rendaReal() { return this.props.rendaReal; }
+  get gastoReal() { return this.props.gastoReal; }
+  get guardadoReal() { return this.props.guardadoReal; }
+  get enviadoEm() { return this.props.enviadoEm; }
+  get respondidoEm() { return this.props.respondidoEm; }
+  get criadoEm() { return this.props.criadoEm; }
+
+  get respondido(): boolean {
+    return this.props.respondidoEm !== null;
+  }
+
+  marcarEnviado(agora: Date): void {
+    this.props.enviadoEm = agora;
+  }
+
+  responder(resposta: RespostaCheckIn, agora: Date): void {
+    ensureNaoFutura(this.props.competencia, agora);
+    ensure(isValidMoney(resposta.rendaReal, { allowZero: true }), 'rendaReal', 'Informe quanto entrou (pode ser 0)');
+    ensure(isValidMoney(resposta.gastoReal, { allowZero: true }), 'gastoReal', 'Informe quanto saiu (pode ser 0)');
+    ensure(
+      isValidMoney(resposta.guardadoReal, { allowZero: true }),
+      'guardadoReal',
+      'Informe quanto sobrou guardado (pode ser 0)',
+    );
+    this.props.rendaReal = resposta.rendaReal;
+    this.props.gastoReal = resposta.gastoReal;
+    this.props.guardadoReal = resposta.guardadoReal;
+    this.props.respondidoEm = agora;
+  }
+
+  toSnapshot(): CheckInProps {
+    return structuredClone(this.props);
+  }
+}

@@ -1,0 +1,378 @@
+/*
+  GERADO a partir de dindinFrontend/src/domain/types.ts — NÃO EDITE AQUI.
+  Altere no frontend e rode `yarn motor:sync` no backend.
+*/
+
+/*
+  Tipos do domínio do dindin.
+  Tudo aqui é puro: sem React, sem I/O, sem Next.
+  Nomes em português porque são termos do produto (renda, reserva, degrau).
+*/
+
+export type TipoRenda = "clt" | "pj" | "informal";
+
+/** O que a pessoa digitou no campo de renda: o salário bruto ou o que cai na conta. */
+export type RendaInformada = "bruta" | "liquida";
+
+/**
+ * Quanto do que sobra vira aporte. Não muda a ordem da cascata — só o tamanho
+ * do passo. A tabela por degrau está em config.ts (PROPORCAO_APORTE).
+ */
+export type Ritmo = "leve" | "equilibrado" | "acelerado";
+
+export type MetaTipo =
+  | "carro"
+  | "casa"
+  | "liberdade"
+  | "emergencia"
+  | "viagem"
+  | "estudos"
+  | "outro";
+
+/**
+ * Um pote do que JÁ está guardado pra meta: quanto tem hoje e quanto rende.
+ * É estoque, não fluxo: não entra na divisão do que sobra por mês.
+ */
+export interface GuardadoNaMeta {
+  /** vem do cliente e sobrevive ao round-trip com o servidor */
+  id: string;
+  /** "Já guardado", "CDB", "Poupança" */
+  nome: string;
+  /** reais */
+  valor: number;
+  /** ao mês, 0,8% = 0.008; ausente = não rende. Digitado pela pessoa, nunca sugerido */
+  rendimentoMensal?: number;
+}
+
+/** A meta principal: uma só, escolhida no onboarding. */
+export interface Meta {
+  tipo: MetaTipo;
+  /** obrigatório quando o tipo é "outro" */
+  nome?: string;
+  valorAlvo: number;
+  /**
+   * A parte do que a pessoa JÁ tem guardado que vai pra esta meta, em potes.
+   * Ausente = ela ainda não respondeu (conta como nada); [] = "não, é minha
+   * reserva". O que está aqui sai da conta da reserva (o mesmo real não pode
+   * ser reserva e meta ao mesmo tempo) e entra na meta desde o mês 0, rendendo.
+   */
+  guardados?: GuardadoNaMeta[];
+}
+
+export type Moradia = "pais" | "aluguel" | "dividido" | "propria" | "financiada";
+
+export type TipoDivida =
+  | "rotativo"
+  | "cheque_especial"
+  | "emprestimo"
+  | "financiamento"
+  | "outra";
+
+export interface Divida {
+  tipo: TipoDivida;
+  /** saldo devedor total, em reais */
+  saldo: number;
+  /** parcela mensal já paga hoje, em reais (0 ou ausente se não há parcela fixa) */
+  parcela?: number;
+  /** taxa anual, ex.: 0.45 = 45% a.a.; ausente → usa o padrão do tipo em config.ts */
+  taxaAnual?: number;
+}
+
+/** Os vales que a pessoa recebe além do salário. O catálogo (o que cada um paga) mora em beneficios.ts. */
+export type TipoBeneficio = "refeicao" | "alimentacao" | "transporte" | "outro";
+
+/**
+ * Um vale ou benefício do mês: VR, VA, VT… Não é dinheiro na conta: é um
+ * cartão que só paga certos gastos. Por isso entra no plano só até o valor
+ * dos gastos fixos que ele paga (aplicarBeneficios).
+ */
+export interface Beneficio {
+  tipo: TipoBeneficio;
+  /** nome dado pela pessoa — obrigatório quando o tipo é "outro" */
+  nome?: string;
+  /** quanto vem por mês, em reais */
+  valor: number;
+}
+
+/** Um gasto fixo do mês, já categorizado. */
+export interface GastoFixo {
+  /** slug do catálogo em categorias.ts; SLUG_OUTRO quando a pessoa criou a categoria */
+  categoria: string;
+  /** nome dado pela pessoa — obrigatório quando a categoria é "outro" */
+  nome?: string;
+  /** quanto sai por mês, em reais */
+  valor: number;
+}
+
+/**
+ * As 9 respostas do onboarding.
+ *
+ * Os campos opcionais são todos posteriores à v1 e por isso nunca obrigatórios:
+ * perfil salvo no navegador antes deles continua válido. Ausente é sempre
+ * `undefined`, nunca `null` — é o que mantém o snapshot do plano estável.
+ */
+export interface Perfil {
+  /**
+   * renda LÍQUIDA mensal, em reais — é o número que todo o motor usa.
+   * Quando a pessoa informa o bruto, este campo recebe o líquido calculado.
+   */
+  rendaMensal: number;
+  /** o que a pessoa digitou; ausente = "liquida" (como era antes do cálculo de bruto) */
+  rendaInformada?: RendaInformada;
+  /** o bruto informado, guardado como registro; o motor não recalcula a partir dele */
+  salarioBruto?: number;
+  /** dependentes para o IRRF */
+  dependentes?: number;
+  /** competência da tabela que gerou o líquido, ex.: "2026-01" — em janeiro avisa que mudou */
+  competenciaTabela?: string;
+  /**
+   * Vales do mês (VR, VA, VT…). Ausente = não respondeu, igual a nenhum. Pagam
+   * gasto fixo e nunca viram dinheiro guardado: ver aplicarBeneficios.
+   */
+  beneficios?: Beneficio[];
+  /**
+   * Usar o 13º no plano (CLT: "usar no plano?"; PJ: "o contrato paga?").
+   * Ausente = não respondeu, igual a não. Informal não é perguntado e o motor
+   * ignora. Ver decimo-terceiro.ts.
+   */
+  decimoTerceiro?: boolean;
+  /** ausente = "equilibrado" */
+  ritmo?: Ritmo;
+  /**
+   * Quanto a pessoa decidiu guardar por mês, no lugar do que o ritmo sugere —
+   * é o que acontece quando ela edita o grupo "Guardar". Fica no perfil (e não
+   * só na tela) porque muda o plano inteiro: precisa viajar com ele.
+   */
+  aporteEscolhido?: number;
+  meta?: Meta;
+  tipoRenda: TipoRenda;
+  idade: number;
+  moradia: Moradia;
+  /** aluguel ou parcela + condomínio; 0 quando mora com os pais ou casa quitada */
+  custoMoradia: number;
+  /** gastos fixos fora moradia, item a item: mercado, academia, celular… */
+  gastosFixos: GastoFixo[];
+  dividas: Divida[];
+  /** quanto já tem guardado hoje (poupança, conta rendendo) */
+  guardado: number;
+}
+
+/**
+ * Degrau da cascata em que a pessoa está:
+ * 0 fôlego mínimo · 1 dívida cara · 2 reserva · 3 dívida média · 4 metas
+ */
+export type Degrau = 0 | 1 | 2 | 3 | 4;
+
+export type ClasseDivida = "cara" | "media" | "barata";
+
+export interface DividaAvaliada extends Divida {
+  taxaAnual: number;
+  classe: ClasseDivida;
+  /** quanto essa dívida custa por mês só de juros, em reais */
+  jurosMensais: number;
+}
+
+/** Um gasto fixo pronto pra tela: nome resolvido, ícone e peso no total. */
+export interface GastoFixoDetalhado extends GastoFixo {
+  /** o nome dado pela pessoa, ou o nome da categoria do catálogo */
+  nomeExibido: string;
+  /** nome do componente no lucide-react */
+  icone: string;
+  /** fatia do custo fixo total, entre 0 e 1 */
+  fatia: number;
+}
+
+export type Destino =
+  | "folego"
+  | "divida_cara"
+  | "reserva"
+  | "divida_media"
+  | "metas";
+
+/** Uma fatia do aporte do mês indo para um degrau da cascata. */
+export interface Alocacao {
+  destino: Destino;
+  valor: number;
+  titulo: string;
+  descricao: string;
+}
+
+export interface Resumo {
+  renda: number;
+  custoMoradia: number;
+  /** soma dos gastos fixos informados */
+  custoFixo: number;
+  /** soma das parcelas de dívida informadas */
+  parcelas: number;
+  custoTotal: number;
+  /**
+   * a parte dos vales que paga gasto fixo (BeneficiosDoMes.pagaGastos); 0 sem
+   * vale. O custo continua cheio — é ele que dimensiona a reserva, e quem perde
+   * o emprego perde o vale junto.
+   */
+  beneficios: number;
+  /** renda + beneficios − custoTotal; pode ser negativo */
+  excedente: number;
+  /** excedente / renda, entre −∞ e 1 */
+  taxaExcedente: number;
+}
+
+export interface Folego {
+  alvo: number;
+  atual: number;
+  falta: number;
+  ok: boolean;
+  /**
+   * meses até fechar com o aporte do plano (e o 13º, quando entra); 0 quando
+   * já está pronto, null quando não fecha (nada entra) ou em modo corte. É o
+   * único lugar que conta isso: o caminho e o cartão do topo leem daqui.
+   */
+  mesesParaCompletar: number | null;
+}
+
+export interface Reserva {
+  multiplicador: 3 | 6;
+  alvo: number;
+  atual: number;
+  falta: number;
+  ok: boolean;
+  /** meses até completar com o aporte atual; null quando o aporte está indo pra outro degrau */
+  mesesParaCompletar: number | null;
+}
+
+export interface QuadroDividas {
+  avaliadas: DividaAvaliada[];
+  caras: DividaAvaliada[];
+  medias: DividaAvaliada[];
+  baratas: DividaAvaliada[];
+  totalCaras: number;
+  totalMedias: number;
+  /** juros mensais somados das dívidas caras */
+  jurosMensaisCaras: number;
+  /** meses pra quitar todas as caras com o aporte atual; null = nunca, com esse aporte */
+  mesesParaQuitarCaras: number | null;
+  mesesParaQuitarMedias: number | null;
+}
+
+export interface PlanoDeCorte {
+  /** quanto os custos passam da renda, em reais */
+  deficit: number;
+  /** quanto precisa cortar pra sobrar a margem mínima */
+  metaCorte: number;
+  /** a meta em palavras — o que cortar e o que isso libera */
+  metaTexto: string;
+  /** onde cortar, em ordem de impacto */
+  sugestoes: string[];
+}
+
+export interface Decisao {
+  titulo: string;
+  texto: string;
+}
+
+/**
+ * Como o piso do que fica livre tratou o aporte deste mês. Existe pra tela
+ * poder explicar um número que não é o da tabela do ritmo: "nesse ritmo o
+ * máximo aqui é R$ X — abaixo disso o plano não se sustenta".
+ */
+export interface PisoAporte {
+  /** o que o ritmo escolhido pediria, sem piso nenhum */
+  sugerido: number;
+  /** o teto que o piso deixa passar neste degrau */
+  teto: number;
+  /** true quando o teto cortou o sugerido — só acontece no acelerado */
+  mordeu: boolean;
+}
+
+/** Por que uma simulação de quitação não terminou. */
+export type MotivoSemQuitacao = "juros" | "horizonte";
+
+/**
+ * Por que as dívidas caras não têm prazo neste plano — e se outro ritmo
+ * resolve. Sem isso o texto afirma "é o único caminho" ao lado de um cartão
+ * que oferece justamente o outro caminho.
+ */
+export interface DiagnosticoDividaCara {
+  motivo: MotivoSemQuitacao;
+  /** o ritmo mais lento, entre os três, que zera as caras; null = nenhum zera */
+  ritmoQueResolve: Ritmo | null;
+  /** prazo nesse ritmo, em meses; null quando nenhum resolve */
+  mesesNoRitmoQueResolve: number | null;
+  /**
+   * Só quando NENHUM ritmo resolve: guardar tudo o que sobra (100%, à mão)
+   * zera as caras? `valor` é esse "tudo" em reais inteiros e `meses` o prazo.
+   * null = nem assim zera (aí sim renegociar é o único caminho), ou ela já
+   * guarda tudo, ou algum ritmo já resolve.
+   */
+  guardandoTudo: { valor: number; meses: number } | null;
+}
+
+/**
+ * O 13º no plano. Entra INTEIRO na cascata no mês em que cai (dezembro), no
+ * passo da vez — o que passar segue pro passo seguinte. Nunca no aporte do mês:
+ * ele não existe nos outros onze.
+ */
+export interface DecimoTerceiroNoPlano {
+  /** o 13º estimado, líquido, em reais */
+  valor: number;
+  /**
+   * o mês da projeção em que o próximo chega (1 = este mês); depois, a cada 12.
+   * null quando o plano foi gerado sem data (`OpcoesMotor.hoje`): aí ele não
+   * entra nos prazos.
+   */
+  primeiroMes: number | null;
+  /** o passo da vez quando o próximo chega; null sem data ou em modo corte */
+  destino: Destino | null;
+  /**
+   * o que sobra do 13º no mês em que o último passo antes da meta fecha: esse
+   * dinheiro já começa a meta, naquele mês
+   */
+  sobraParaAMeta: number;
+}
+
+/** Os vales do mês depois de pagar os gastos fixos que cada um paga. */
+export interface BeneficiosDoMes {
+  /** tudo o que a pessoa informou */
+  total: number;
+  /** a parte que paga gasto fixo — é o que entra no plano */
+  pagaGastos: number;
+  /** o que fica no cartão sem gasto fixo pra pagar: não vira dinheiro guardado */
+  semUso: number;
+}
+
+export interface Plano {
+  perfil: Perfil;
+  resumo: Resumo;
+  beneficios: BeneficiosDoMes;
+  /** gastos fixos do maior pro menor, prontos pra tela */
+  gastosFixos: GastoFixoDetalhado[];
+  modoCorte: boolean;
+  corte: PlanoDeCorte | null;
+  degrau: Degrau;
+  decisao: Decisao;
+  /** o ritmo que gerou este plano — já resolvido (perfil.ritmo ou o padrão) */
+  ritmo: Ritmo;
+  /** parte do excedente que vai pra cascata este mês */
+  aporte: number;
+  /** de onde saiu o aporte: o que o ritmo pedia e o teto que o piso impôs */
+  piso: PisoAporte;
+  /** parte do excedente que fica livre pra gastos variáveis */
+  livre: number;
+  alocacoes: Alocacao[];
+  folego: Folego;
+  reserva: Reserva;
+  /**
+   * a parte do guardado que a pessoa pôs na meta (Meta.guardados, limitada ao
+   * guardado). Fica FORA do fôlego e da reserva: 0 quando nada foi pra meta
+   */
+  guardadoNaMeta: number;
+  /** null quando a pessoa não usa o 13º no plano (ou é informal, ou ele dá 0) */
+  decimoTerceiro: DecimoTerceiroNoPlano | null;
+  dividas: QuadroDividas;
+  /**
+   * só existe quando há dívida cara sem prazo fora do modo corte; null quando
+   * há prazo, quando não há dívida cara, ou em modo corte (aí quem fala é `corte`)
+   */
+  diagnosticoCaras: DiagnosticoDividaCara | null;
+  proximosPassos: string[];
+}
