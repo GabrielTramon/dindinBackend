@@ -75,6 +75,10 @@ const schema = z
       if (env.PERSISTENCIA === 'memoria') problema('PERSISTENCIA', 'memoria não é permitida em produção');
       if (env.EMAIL_PROVEDOR === 'console') problema('EMAIL_PROVEDOR', 'console não envia e-mail de verdade');
       if (env.CORS_ORIGIN.split(',').some((o) => o.trim() === '*')) problema('CORS_ORIGIN', '"*" não é permitido em produção');
+      // sem CORS_ORIGIN vale o padrão (localhost): o site publicado levaria "CORS error" sem aviso nenhum aqui
+      if (env.CORS_ORIGIN.split(',').some((o) => /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?\/*$/.test(o.trim()))) {
+        problema('CORS_ORIGIN', 'em produção, informe o endereço do site (ex.: https://dindin.gabrieltramontin.com.br), não localhost');
+      }
       // o intervalo por endereço é o que impede usar o Esqueci a senha pra lotar a caixa de alguém trocando de IP
       if (env.LINK_REENVIO_SEGUNDOS < INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS) {
         problema('LINK_REENVIO_SEGUNDOS', `precisa ser pelo menos ${INTERVALO_MINIMO_ENTRE_LINKS_SEGUNDOS} em produção`);
@@ -112,8 +116,23 @@ export interface AppConfig {
   mail: { provider: 'console' | 'resend'; from: string; resendApiKey: string | undefined };
 }
 
+/**
+ * Variável presente mas vazia vale como ausente, e espaço em volta sai. O painel
+ * da Vercel deixa salvar a chave com o valor em branco, e "" não é "não
+ * informado" pro zod: PORT="" virava 0 ("pequeno demais") em vez do padrão
+ * 3701, e o boot listava oito erros que não diziam o que faltava de verdade.
+ */
+function semVazias(source: NodeJS.ProcessEnv): Record<string, string> {
+  const limpas: Record<string, string> = {};
+  for (const [chave, valor] of Object.entries(source)) {
+    const v = valor?.trim();
+    if (v) limpas[chave] = v;
+  }
+  return limpas;
+}
+
 export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
-  const result = schema.safeParse(source);
+  const result = schema.safeParse(semVazias(source));
   if (!result.success) {
     const linhas = result.error.issues.map((i) => `  - ${i.path.join('.') || '(ambiente)'}: ${i.message}`);
     throw new Error(`Configuração inválida:\n${linhas.join('\n')}\nVeja .env.example.`);

@@ -37,6 +37,69 @@ describe('loadConfig', () => {
     expect(c.appUrl).toBe('https://dindin.app');
   });
 
+  /*
+    O boot da Vercel em 29/09/2026: as variáveis existiam no painel com o valor em
+    branco, e a API caía com "PORT: pequeno demais", "PERSISTENCIA: opção
+    inválida"… — oito erros, nenhum dizendo o que faltava.
+  */
+  it('variável vazia vale como ausente: cai no padrão', () => {
+    const c = loadConfig({
+      PERSISTENCIA: 'memoria',
+      JWT_SECRET: SEGREDO,
+      PORT: '',
+      LOG_REQUESTS: '',
+      RATE_LIMIT: ' ',
+      SESSAO_DIAS: '',
+      LINK_MAGICO_MINUTOS: '',
+      LINK_CONFIRMACAO_HORAS: '',
+      EMAIL_PROVEDOR: '',
+      CORS_ORIGIN: '',
+    });
+    expect(c).toMatchObject({
+      port: 3701,
+      logRequests: true,
+      sessionTtlSeconds: 30 * 24 * 60 * 60,
+      resetLinkTtlMinutes: 15,
+      confirmationLinkTtlHours: 48,
+      corsOrigins: ['http://localhost:3700'],
+      mail: { provider: 'console' },
+    });
+  });
+
+  it('em produção com tudo vazio, o erro diz o que falta de verdade', () => {
+    const vazio = (chaves: string[]) => Object.fromEntries(chaves.map((k) => [k, '']));
+    expect(() =>
+      loadConfig({
+        NODE_ENV: 'production',
+        ...vazio(['PORT', 'PERSISTENCIA', 'DATABASE_URL', 'JWT_SECRET', 'EMAIL_PROVEDOR', 'APP_URL']),
+      }),
+    ).toThrow(/JWT_SECRET: obrigatória[\s\S]*DATABASE_URL: obrigatória[\s\S]*EMAIL_PROVEDOR/);
+  });
+
+  it('em produção, CORS_ORIGIN ausente (o padrão localhost) não sobe', () => {
+    const producao = {
+      NODE_ENV: 'production',
+      PERSISTENCIA: 'prisma',
+      DATABASE_URL: 'postgresql://u:p@db.exemplo.com:5432/dindin',
+      JWT_SECRET: SEGREDO,
+      EMAIL_PROVEDOR: 'resend',
+      RESEND_API_KEY: 're_x',
+      APP_URL: 'https://dindin.gabrieltramontin.com.br',
+    };
+    expect(() => loadConfig({ ...producao, CORS_ORIGIN: '' })).toThrow(/CORS_ORIGIN: em produção, informe o endereço do site/);
+    expect(() => loadConfig({ ...producao, CORS_ORIGIN: 'http://localhost:3700/' })).toThrow(/CORS_ORIGIN/);
+    expect(loadConfig({ ...producao, CORS_ORIGIN: 'https://dindin.gabrieltramontin.com.br' }).corsOrigins).toEqual([
+      'https://dindin.gabrieltramontin.com.br',
+    ]);
+  });
+
+  it('espaço em volta do valor sai (colado do painel)', () => {
+    const c = loadConfig({ PERSISTENCIA: ' memoria ', JWT_SECRET: ` ${SEGREDO} `, PORT: ' 8080 ' });
+    expect(c.persistence).toBe('memoria');
+    expect(c.jwtSecret).toBe(SEGREDO);
+    expect(c.port).toBe(8080);
+  });
+
   it('CORS tira a barra do fim: o navegador manda a origem sem ela', () => {
     const c = loadConfig({
       PERSISTENCIA: 'memoria',
