@@ -37,6 +37,15 @@ describe('loadConfig', () => {
     expect(c.appUrl).toBe('https://dindin.app');
   });
 
+  it('CORS tira a barra do fim: o navegador manda a origem sem ela', () => {
+    const c = loadConfig({
+      PERSISTENCIA: 'memoria',
+      JWT_SECRET: SEGREDO,
+      CORS_ORIGIN: 'https://dindin.gabrieltramontin.com.br/, https://www.dindin.app//',
+    });
+    expect(c.corsOrigins).toEqual(['https://dindin.gabrieltramontin.com.br', 'https://www.dindin.app']);
+  });
+
   it('produção recusa memória, e-mail no console e CORS aberto — tudo junto', () => {
     expect(() =>
       loadConfig({ NODE_ENV: 'production', PERSISTENCIA: 'memoria', JWT_SECRET: SEGREDO, CORS_ORIGIN: '*' }),

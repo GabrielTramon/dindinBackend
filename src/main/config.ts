@@ -119,7 +119,12 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error(`Configuração inválida:\n${linhas.join('\n')}\nVeja .env.example.`);
   }
   const e = result.data;
-  const origins = e.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+  // o navegador manda a origem sem barra no fim ("https://site.com.br"), e o cors
+  // compara letra por letra: "https://site.com.br/" colado do painel da Vercel
+  // derrubava todo pedido do site com "CORS error" sem nenhum aviso aqui
+  const origins = e.CORS_ORIGIN.split(',')
+    .map((o) => o.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
 
   return {
     env: e.NODE_ENV,
