@@ -32,6 +32,18 @@ describe("guardarPor", () => {
     });
   });
 
+  it("começa do que já está guardado: R$ 10.000 a 1% ao mês por 1 ano, sem guardar mais nada", () => {
+    // 10.000 × 1,01¹² = 11.268,25
+    expect(guardarPor({ inicial: 10000, porMes: 0, taxaMensal: 0.01 }, 12)).toEqual({
+      meses: 12,
+      guardado: 10000,
+      rendimento: 1268.25,
+      total: 11268.25,
+    });
+    // e soma com o que entra todo mês
+    expect(guardarPor({ inicial: 10000, porMes: 500 }, 12)).toMatchObject({ guardado: 16000, total: 16000 });
+  });
+
   it("o 13º entra no mês em que cai, como no plano", () => {
     const decimo = entradasDoDecimo({ valor: 3000, primeiroMes: 4 });
     expect(guardarPor({ porMes: 500, decimo }, 12).guardado).toBe(9000);

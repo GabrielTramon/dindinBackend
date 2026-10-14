@@ -126,6 +126,15 @@ export {
   textosSimulador,
 } from "./resposta";
 export { guardarPor, simularNoTempo, PERIODOS_DA_TABELA, MAX_MESES_SIMULADOS } from "./simulador";
+export {
+  evolucaoMensal,
+  jurosCompostos,
+  MAX_MESES_JUROS,
+  mesesValidos,
+  porAno,
+  taxaAoMes,
+} from "./juros-compostos";
+export type { EntradaJuros, MesDeJuros, PeriodoTaxa, ResultadoJuros } from "./juros-compostos";
 export type { ParametrosSimulacao, SimulacaoNoTempo } from "./simulador";
 export type {
   Resposta,

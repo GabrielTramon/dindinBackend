@@ -844,7 +844,7 @@ export const textosPote = {
 */
 export const textosSimulador = {
   titulo: "E se você mantiver?",
-  ajuda: "Mude o valor, o rendimento ou o tempo pra comparar. Nada aqui muda o seu plano.",
+  ajuda: "Mude o que já tem, o valor, o rendimento ou o tempo pra comparar. Nada aqui muda o seu plano.",
   /** "Em 3 anos" — o rótulo do resultado do tempo escolhido */
   em: (meses: number) => (meses > 0 ? `Em ${formatMeses(meses)}` : "Escolha um tempo"),
   /** "R$ 90.000 guardados + R$ 7.200 de rendimento" */
@@ -859,4 +859,6 @@ export const textosSimulador = {
   semRendimento: "Sem rendimento, é só o que você guarda. Se esse dinheiro rende, diga quanto ao mês pra ver a diferença.",
   inflacao: "Valores de hoje, sem descontar a inflação: daqui a alguns anos, o mesmo dinheiro compra menos.",
   voltarAoPlano: (valor: number) => `Voltar pro valor do plano (${formatBRL(valor)})`,
+  /** o link pra calculadora, que faz a mesma conta sem o plano */
+  calculadora: "Abrir a calculadora de juros compostos",
 };

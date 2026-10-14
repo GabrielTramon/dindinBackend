@@ -24,6 +24,21 @@ export function formatBRL(valor: number, opts: { centavos?: boolean } = {}): str
   return opts.centavos ? brlCentavos.format(n) : brlInteiro.format(n);
 }
 
+/**
+ * Real curto pros eixos de gráfico: R$ 850 · R$ 12 mil · R$ 1,2 mi · R$ 3 bi.
+ * Na mão, sem `notation: "compact"`: o formato compacto depende do ICU de cada
+ * navegador ("mil" × "K"), e o eixo tem de dizer a mesma coisa em todo lugar.
+ */
+export function formatBRLCurto(valor: number): string {
+  const n = Number.isFinite(valor) ? valor : 0;
+  const abs = Math.abs(n);
+  const casa = (v: number) => v.toLocaleString("pt-BR", { maximumFractionDigits: v < 10 ? 1 : 0 });
+  if (abs >= 1e9) return `R$ ${casa(n / 1e9)} bi`;
+  if (abs >= 1e6) return `R$ ${casa(n / 1e6)} mi`;
+  if (abs >= 1e3) return `R$ ${casa(n / 1e3)} mil`;
+  return formatBRL(n);
+}
+
 /** 0.4321 → "43%"; com `casas`, "43,2%" */
 export function formatPct(fracao: number, casas = 0): string {
   const n = Number.isFinite(fracao) ? fracao * 100 : 0;
