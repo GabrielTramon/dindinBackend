@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import type { AuthTokenService, EmailMessage, IssuedToken } from '../../../shared/application/ports';
 import { InProcessBackgroundJobs } from '../../../shared/infra/background-jobs';
-import { ConflictError, NotFoundError, UnauthorizedError, ValidationError } from '../../../shared/domain/errors';
+import {
+  ConflictError,
+  EmailNaoConfirmadoError,
+  NotFoundError,
+  UnauthorizedError,
+  ValidationError,
+} from '../../../shared/domain/errors';
 import {
   FixedClock,
   InMemoryMailer,
@@ -20,11 +26,20 @@ import { DescadastrarUseCase } from './descadastrar.use-case';
 import { ASSUNTO_CONFIRMAR_EMAIL, emailConfirmarEmail } from './emails/confirmar-email';
 import { ASSUNTO_CRIAR_SENHA_NOVA, emailCriarSenhaNova } from './emails/criar-senha-nova';
 import { textoDaValidade } from './emails/link-no-email';
-import { EntrarComSenhaUseCase, MENSAGEM_CREDENCIAIS_INVALIDAS } from './entrar-com-senha.use-case';
+import {
+  EntrarComSenhaUseCase,
+  MENSAGEM_CREDENCIAIS_INVALIDAS,
+  mensagemEmailNaoConfirmado,
+} from './entrar-com-senha.use-case';
 import { EmissorDeLinks, MENSAGEM_LINK_INVALIDO, type LinksConfig } from './links-por-email';
 import { ObterMeUseCase } from './obter-me.use-case';
 import { ReativarUseCase } from './reativar.use-case';
 import { RedefinirSenhaUseCase } from './redefinir-senha.use-case';
+import {
+  ReenviarConfirmacaoUseCase,
+  TAREFA_REENVIAR_CONFIRMACAO,
+  type ReenviarConfirmacaoInput,
+} from './reenviar-confirmacao.use-case';
 import {
   SolicitarRedefinicaoDeSenhaUseCase,
   TAREFA_ESQUECI_SENHA,
@@ -126,6 +141,9 @@ let falhasEmSegundoPlano: Array<{ message: string; context: Record<string, unkno
 let pedirSenhaNovaSemEsperar: SolicitarRedefinicaoDeSenhaUseCase;
 /** o pedido + o envio que ele agendou, já terminado: é o que a pessoa vê depois de um tempo */
 let esqueci: { execute(input: SolicitarRedefinicaoDeSenhaInput): Promise<void> };
+/** o reenvio como a rota chama (volta sem esperar) e já terminado */
+let reenviarSemEsperar: ReenviarConfirmacaoUseCase;
+let reenviar: { execute(input: ReenviarConfirmacaoInput): Promise<void> };
 let redefinir: RedefinirSenhaUseCase;
 let verificar: VerificarLinkMagicoUseCase;
 let trocar: TrocarSenhaUseCase;
@@ -161,7 +179,7 @@ beforeEach(() => {
   };
 
   links = new EmissorDeLinks(secureTokens, config);
-  cadastrar = new CadastrarComSenhaUseCase(repo, passwords, links, authEspiao, mailer, clock, new SequentialIdGenerator('sub'));
+  cadastrar = new CadastrarComSenhaUseCase(repo, passwords, links, mailer, clock, new SequentialIdGenerator('sub'));
   entrar = new EntrarComSenhaUseCase(repo, passwords, authEspiao);
   falhasEmSegundoPlano = [];
   jobs = new InProcessBackgroundJobs({ error: (message, context) => falhasEmSegundoPlano.push({ message, context }) });
@@ -169,6 +187,13 @@ beforeEach(() => {
   esqueci = {
     execute: async (input) => {
       await pedirSenhaNovaSemEsperar.execute(input);
+      await jobs.idle();
+    },
+  };
+  reenviarSemEsperar = new ReenviarConfirmacaoUseCase(repo, links, mailer, clock, jobs);
+  reenviar = {
+    execute: async (input) => {
+      await reenviarSemEsperar.execute(input);
       await jobs.idle();
     },
   };
@@ -215,10 +240,10 @@ async function contaConfirmada(email: string): Promise<Subscriber> {
 }
 
 describe('CadastrarComSenhaUseCase', () => {
-  it('cria a conta com o hash da senha, abre a sessão e manda o "Confirme seu e-mail" (48 h) ao endereço normalizado', async () => {
-    const { subscriber, sessao, falhaNoEnvio } = await cadastrar.execute({ email: '  Pessoa@Exemplo.COM ', senha: SENHA });
+  it('grava a conta PENDENTE com o hash da senha, sem sessão, e manda o "Confirme seu e-mail" (48 h) ao endereço normalizado', async () => {
+    const { subscriber, enviouLink } = await cadastrar.execute({ email: '  Pessoa@Exemplo.COM ', senha: SENHA });
 
-    expect(falhaNoEnvio).toBeNull();
+    expect(enviouLink).toBe(true);
     expect((await repo.findByEmail('pessoa@exemplo.com'))?.toSnapshot()).toEqual({
       id: 'sub-1',
       email: 'pessoa@exemplo.com',
@@ -232,13 +257,23 @@ describe('CadastrarComSenhaUseCase', () => {
       atualizadoEm: clock.now(),
     });
     expect(subscriber.id).toBe('sub-1');
-    expect(authTokens.verifySession(sessao.token)).toEqual({ subscriberId: 'sub-1', versao: 0 });
-    expect(sessoesEmitidas).toEqual(['sub-1']);
+    // a conta só passa a valer pelo link: nenhuma sessão sai do cadastro
+    expect(sessoesEmitidas).toEqual([]);
 
     expect(mailer.sent).toHaveLength(1);
     expect(mailer.last()).toMatchObject({ to: 'pessoa@exemplo.com', subject: ASSUNTO_CONFIRMAR_EMAIL });
     expect(tokenDo(mailer.last(), 'https://dindin.test/entrar')).toBe('token-1');
     expect(mailer.last()?.text).toContain('48 horas');
+  });
+
+  it('o link confirma e já entra: só aí a conta passa a valer', async () => {
+    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    await expect(entrar.execute({ email: 'a@x.dev', senha: SENHA })).rejects.toBeInstanceOf(EmailNaoConfirmadoError);
+
+    const { subscriber, sessao } = await verificar.execute({ token: tokenDo(mailer.last(), '/entrar') });
+    expect(subscriber.emailVerificadoEm).toEqual(clock.now());
+    expect(authTokens.verifySession(sessao.token)).toEqual({ subscriberId: 'sub-1', versao: 0 });
+    await expect(entrar.execute({ email: 'a@x.dev', senha: SENHA })).resolves.toBeDefined();
   });
 
   it('a senha vai pro hash exatamente como foi digitada: sem trim', async () => {
@@ -253,7 +288,6 @@ describe('CadastrarComSenhaUseCase', () => {
     expect((erro as ValidationError).message).toBe('Confira os campos destacados.');
     expect(repo.saves).toBe(0);
     expect(mailer.sent).toHaveLength(0);
-    expect(sessoesEmitidas).toEqual([]);
   });
 
   it.each([
@@ -272,18 +306,16 @@ describe('CadastrarComSenhaUseCase', () => {
     await expect(cadastrar.execute({ email: 'b@x.dev', senha: 'y'.repeat(128) })).resolves.toBeDefined();
   });
 
-  it('e-mail que já tem conta → 409 com a mensagem pra tela, sem hash, sem e-mail e sem sessão', async () => {
-    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
-    const [savesAntes, hashesAntes] = [repo.saves, passwords.hashes];
+  it('e-mail de conta CONFIRMADA → 409 com a mensagem pra tela, sem hash, sem e-mail e sem mexer na senha', async () => {
+    await contaConfirmada('a@x.dev');
+    const [savesAntes, hashesAntes, enviados] = [repo.saves, passwords.hashes, mailer.sent.length];
 
     await expect(cadastrar.execute({ email: ' A@X.dev', senha: OUTRA_SENHA })).rejects.toThrow(
       new ConflictError(MENSAGEM_EMAIL_JA_CADASTRADO, { email: MENSAGEM_EMAIL_JA_CADASTRADO }),
     );
     expect(repo.saves).toBe(savesAntes);
     expect(passwords.hashes).toBe(hashesAntes);
-    expect(mailer.sent).toHaveLength(1);
-    expect(sessoesEmitidas).toEqual(['sub-1']);
-    // a senha da conta continua a primeira
+    expect(mailer.sent).toHaveLength(enviados);
     expect((await repo.findByEmail('a@x.dev'))?.senhaHash).toBe(`senha(${SENHA})`);
   });
 
@@ -293,14 +325,54 @@ describe('CadastrarComSenhaUseCase', () => {
     expect((await repo.findByEmail('antiga@x.dev'))?.temSenha).toBe(false);
   });
 
-  it('corrida no cadastro: outro pedido gravou o mesmo e-mail no meio → 409, sem e-mail e sem sessão', async () => {
+  /*
+    Quem digitou o e-mail de outra pessoa não "segura" o endereço: a dona dele
+    cadastra de novo, a senha passa a ser a dela e só o link novo vale. Sem isso
+    ela nunca criaria a conta — ou confirmaria com a senha de quem cadastrou.
+  */
+  it('conta PENDENTE: cadastrar de novo troca a senha e manda um link novo; o de antes não vale mais', async () => {
+    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    const primeiro = tokenDo(mailer.last(), '/entrar');
+    clock.advance(MINUTO);
+
+    const { subscriber, enviouLink } = await cadastrar.execute({ email: 'A@x.dev', senha: OUTRA_SENHA });
+    expect(enviouLink).toBe(true);
+    expect(subscriber.id).toBe('sub-1');
+    expect(mailer.sent).toHaveLength(2);
+    const gravado = await repo.findByEmail('a@x.dev');
+    expect(gravado?.senhaHash).toBe(`senha(${OUTRA_SENHA})`);
+    // a senha nova derruba as sessões de antes (de uma conta pendente do tempo em que o cadastro entrava na hora)
+    expect(gravado?.versaoSessao).toBe(1);
+    expect(sessoesEmitidas).toEqual([]);
+
+    await expect(verificar.execute({ token: primeiro })).rejects.toBeInstanceOf(UnauthorizedError);
+    await verificar.execute({ token: tokenDo(mailer.last(), '/entrar') });
+    await expect(entrar.execute({ email: 'a@x.dev', senha: SENHA })).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(entrar.execute({ email: 'a@x.dev', senha: OUTRA_SENHA })).resolves.toBeDefined();
+  });
+
+  it('de novo dentro de 60 s: nada muda, nem a senha — o link que já está na caixa vale com a senha de quem pediu', async () => {
+    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    const hashesAntes = passwords.hashes;
+    clock.advance(59_999);
+
+    const { enviouLink } = await cadastrar.execute({ email: 'a@x.dev', senha: OUTRA_SENHA });
+    expect(enviouLink).toBe(false);
+    expect(mailer.sent).toHaveLength(1);
+    expect(passwords.hashes).toBe(hashesAntes);
+    expect((await repo.findByEmail('a@x.dev'))?.senhaHash).toBe(`senha(${SENHA})`);
+
+    await verificar.execute({ token: tokenDo(mailer.last(), '/entrar') });
+    await expect(entrar.execute({ email: 'a@x.dev', senha: SENHA })).resolves.toBeDefined();
+  });
+
+  it('corrida no cadastro: outro pedido gravou o mesmo e-mail no meio → 409, sem e-mail', async () => {
     repo.depoisDaBuscaPorEmail = () => repo.save(doOutroPedido('a@x.dev'));
 
     await expect(cadastrar.execute({ email: 'a@x.dev', senha: SENHA })).rejects.toThrow(
       new ConflictError(MENSAGEM_EMAIL_JA_CADASTRADO, { email: MENSAGEM_EMAIL_JA_CADASTRADO }),
     );
     expect(mailer.sent).toHaveLength(0);
-    expect(sessoesEmitidas).toEqual([]);
     expect(await repo.findById('sub-1')).toBeNull();
     expect((await repo.findByEmail('a@x.dev'))?.id).toBe('outro-pedido');
   });
@@ -316,29 +388,24 @@ describe('CadastrarComSenhaUseCase', () => {
     expect(erro).toBeInstanceOf(ConflictError);
     expect((erro as ConflictError).message).not.toBe(MENSAGEM_EMAIL_JA_CADASTRADO);
     expect(mailer.sent).toHaveLength(0);
-    expect(sessoesEmitidas).toEqual([]);
   });
 
-  it('envio falhou: a conta existe e a sessão sai do mesmo jeito; o link é anulado e o Esqueci a senha manda na hora', async () => {
+  it('envio falhou: o erro sobe, o link é anulado e tentar de novo manda na hora', async () => {
     mailer.failNext = true;
-    const { subscriber, sessao, falhaNoEnvio } = await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    await expect(cadastrar.execute({ email: 'a@x.dev', senha: SENHA })).rejects.toThrow('falha simulada de envio');
 
-    expect(falhaNoEnvio).toEqual({ erro: new Error('falha simulada de envio') });
-    expect(authTokens.verifySession(sessao.token)).toEqual({ subscriberId: subscriber.id, versao: 0 });
     const gravado = await repo.findByEmail('a@x.dev');
-    expect(gravado?.senhaHash).toBe(`senha(${SENHA})`);
     expect(gravado?.tokenHash).toBe(`${PREFIXO_TOKEN_CONSUMIDO}sub-1`);
     expect(gravado?.tokenExpiraEm).toBeNull();
     expect(gravado?.emailVerificadoEm).toBeNull();
     await expect(verificar.execute({ token: 'token-1' })).rejects.toBeInstanceOf(UnauthorizedError);
 
-    // entra com a senha, e o link anulado não segura o próximo pedido no limite de reenvio
-    await expect(entrar.execute({ email: 'a@x.dev', senha: SENHA })).resolves.toBeDefined();
-    await esqueci.execute({ email: 'a@x.dev' });
+    // o link anulado não conta pro intervalo: a segunda tentativa manda sem esperar
+    await expect(cadastrar.execute({ email: 'a@x.dev', senha: SENHA })).resolves.toMatchObject({ enviouLink: true });
     expect(mailer.sent).toHaveLength(1);
   });
 
-  it('envio falhou e nem a anulação gravou: a conta e a sessão valem igual', async () => {
+  it('envio falhou e nem a anulação gravou: o erro do envio sobe do mesmo jeito', async () => {
     mailer.failNext = true;
     const salvar = repo.save.bind(repo);
     let chamadas = 0;
@@ -348,9 +415,7 @@ describe('CadastrarComSenhaUseCase', () => {
       return salvar(s);
     };
 
-    const { sessao, falhaNoEnvio } = await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
-    expect(falhaNoEnvio).not.toBeNull();
-    expect(sessao.token).toEqual(expect.any(String));
+    await expect(cadastrar.execute({ email: 'a@x.dev', senha: SENHA })).rejects.toThrow('falha simulada de envio');
     expect((await repo.findByEmail('a@x.dev'))?.tokenHash).toBe('confirmacao:hash(token-1)');
   });
 
@@ -358,20 +423,83 @@ describe('CadastrarComSenhaUseCase', () => {
     repo.falharProximoSave = true;
     await expect(cadastrar.execute({ email: 'a@x.dev', senha: SENHA })).rejects.toThrow('banco fora do ar');
     expect(mailer.sent).toHaveLength(0);
-    expect(sessoesEmitidas).toEqual([]);
+  });
+});
+
+describe('ReenviarConfirmacaoUseCase', () => {
+  it('conta pendente: manda um link novo, que substitui o de antes, sem mexer na senha', async () => {
+    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    const primeiro = tokenDo(mailer.last(), '/entrar');
+    clock.advance(MINUTO);
+
+    await reenviar.execute({ email: ' A@x.dev ' });
+    expect(mailer.sent).toHaveLength(2);
+    expect(mailer.last()).toMatchObject({ to: 'a@x.dev', subject: ASSUNTO_CONFIRMAR_EMAIL });
+    const segundo = tokenDo(mailer.last(), '/entrar');
+    expect(segundo).not.toBe(primeiro);
+    expect((await repo.findByEmail('a@x.dev'))?.senhaHash).toBe(`senha(${SENHA})`);
+
+    await expect(verificar.execute({ token: primeiro })).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(verificar.execute({ token: segundo })).resolves.toBeDefined();
+  });
+
+  it('o pedido volta antes de buscar a conta: sem conta, confirmada ou pendente, a mesma resposta', async () => {
+    await cadastrar.execute({ email: 'pendente@x.dev', senha: SENHA });
+    await contaConfirmada('confirmada@x.dev');
+    clock.advance(MINUTO);
+    const enviados = mailer.sent.length;
+
+    for (const email of ['ninguem@x.dev', 'confirmada@x.dev', 'pendente@x.dev']) {
+      await expect(reenviarSemEsperar.execute({ email })).resolves.toBeUndefined();
+    }
+    expect(mailer.sent).toHaveLength(enviados);
+
+    await jobs.idle();
+    // só a pendente recebe
+    expect(mailer.sent).toHaveLength(enviados + 1);
+    expect(mailer.last()?.to).toBe('pendente@x.dev');
+  });
+
+  it('dentro de 60 s do último link não manda de novo', async () => {
+    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    clock.advance(59_999);
+    await reenviar.execute({ email: 'a@x.dev' });
+    expect(mailer.sent).toHaveLength(1);
+    clock.advance(1);
+    await reenviar.execute({ email: 'a@x.dev' });
+    expect(mailer.sent).toHaveLength(2);
+  });
+
+  it('e-mail inválido → ValidationError antes de qualquer coisa', async () => {
+    await expect(reenviarSemEsperar.execute({ email: 'sem-arroba' })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('envio falhou: a falha vai pro log da tarefa e o link é anulado (o próximo pedido manda na hora)', async () => {
+    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    clock.advance(MINUTO);
+    mailer.failNext = true;
+    await reenviar.execute({ email: 'a@x.dev' });
+    expect(falhasEmSegundoPlano).toEqual([
+      expect.objectContaining({ context: expect.objectContaining({ tarefa: TAREFA_REENVIAR_CONFIRMACAO }) }),
+    ]);
+    expect((await repo.findByEmail('a@x.dev'))?.tokenExpiraEm).toBeNull();
+
+    await reenviar.execute({ email: 'a@x.dev' });
+    expect(mailer.sent).toHaveLength(2);
   });
 });
 
 describe('EntrarComSenhaUseCase', () => {
   beforeEach(async () => {
-    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    await contaConfirmada('a@x.dev');
     sessoesEmitidas.length = 0;
+    passwords.verificacoes.length = 0;
   });
 
-  it('senha certa → sessão da conta, com o e-mail normalizado e sem precisar ter confirmado', async () => {
+  it('senha certa de conta confirmada → sessão da conta, com o e-mail normalizado', async () => {
     const { subscriber, sessao } = await entrar.execute({ email: '  A@X.DEV ', senha: SENHA });
     expect(subscriber.id).toBe('sub-1');
-    expect(subscriber.emailVerificadoEm).toBeNull();
+    expect(subscriber.emailVerificadoEm).toEqual(clock.now());
     expect(authTokens.verifySession(sessao.token)).toEqual({ subscriberId: 'sub-1', versao: 0 });
     expect(sessoesEmitidas).toEqual(['sub-1']);
   });
@@ -383,6 +511,18 @@ describe('EntrarComSenhaUseCase', () => {
     ['e-mail sem conta', 'ninguem@x.dev', SENHA],
   ])('%s → UnauthorizedError com a mesma frase, sem sessão', async (_caso, email, senha) => {
     await expect(entrar.execute({ email, senha })).rejects.toThrow(new UnauthorizedError(MENSAGEM_CREDENCIAIS_INVALIDAS));
+    expect(sessoesEmitidas).toEqual([]);
+  });
+
+  it('conta PENDENTE com a senha certa → EmailNaoConfirmadoError, sem sessão; com a senha errada, o 401 de sempre', async () => {
+    await cadastrar.execute({ email: 'b@x.dev', senha: SENHA });
+    await expect(entrar.execute({ email: 'B@x.dev', senha: SENHA })).rejects.toThrow(
+      new EmailNaoConfirmadoError(mensagemEmailNaoConfirmado('b@x.dev')),
+    );
+    // sem a senha, não dá pra saber que o e-mail tem conta pendente
+    await expect(entrar.execute({ email: 'b@x.dev', senha: OUTRA_SENHA })).rejects.toThrow(
+      new UnauthorizedError(MENSAGEM_CREDENCIAIS_INVALIDAS),
+    );
     expect(sessoesEmitidas).toEqual([]);
   });
 
@@ -678,7 +818,7 @@ describe('RedefinirSenhaUseCase', () => {
     const s = await repo.findById('sub-1');
     expect(s?.senhaHash).toBe(`senha(${SENHA})`);
     expect(s?.emailVerificadoEm).toBeNull();
-    expect(sessoesEmitidas).toEqual(['sub-1']);
+    expect(sessoesEmitidas).toEqual([]);
     // o link não foi gasto pela tentativa errada
     await expect(verificar.execute({ token: daConfirmacao })).resolves.toBeDefined();
   });
@@ -694,7 +834,8 @@ describe('RedefinirSenhaUseCase', () => {
 
 describe('TrocarSenhaUseCase', () => {
   beforeEach(async () => {
-    await cadastrar.execute({ email: 'a@x.dev', senha: SENHA });
+    // confirmada: os testes entram com a senha nova no fim
+    await contaConfirmada('a@x.dev');
   });
 
   it('com a senha atual certa: troca, e só a nova entra', async () => {
@@ -909,7 +1050,8 @@ describe('e-mails com link', () => {
     expect(m.text).toContain('https://dindin.app/entrar#token=abc_DEF-123');
     expect(m.html).toContain('href="https://dindin.app/entrar#token=abc_DEF-123"');
     expect(m.text).toContain('Ele vale por 48 horas e funciona uma vez só.');
-    expect(m.text).toContain('Se não foi você que criou a conta, ignore este e-mail.');
+    expect(m.text).toContain('Falta só um passo pra sua conta no dindin valer');
+    expect(m.text).toContain('Se não foi você que pediu, ignore este e-mail: sem a confirmação, a conta não passa a valer.');
     expect(`${m.text}${m.html}`).not.toMatch(/[?&]token=/);
   });
 

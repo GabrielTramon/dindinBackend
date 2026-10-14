@@ -43,10 +43,11 @@ describe('e2e (memória)', () => {
 
   it('a composição usa o scrypt de verdade: a senha gravada é o hash, e a de mentira do login também custa', async () => {
     const { app, container } = montarAmbiente();
-    const { body } = await request(app).post('/api/v1/auth/cadastrar').send({ email: 'a@exemplo.com', senha: 'senha de verdade' }).expect(201);
-    const gravada = await container.repositories.subscribers.findById(body.subscriber.id);
+    await request(app).post('/api/v1/auth/cadastrar').send({ email: 'a@exemplo.com', senha: 'senha de verdade' }).expect(202);
+    const gravada = await container.repositories.subscribers.findByEmail('a@exemplo.com');
     expect(gravada?.senhaHash).toMatch(/^scrypt\$16384\$8\$1\$/);
-    await request(app).post('/api/v1/auth/entrar').send({ email: 'a@exemplo.com', senha: 'senha de verdade' }).expect(200);
+    // a senha confere (403, não 401): só falta confirmar o e-mail
+    await request(app).post('/api/v1/auth/entrar').send({ email: 'a@exemplo.com', senha: 'senha de verdade' }).expect(403);
     await request(app).post('/api/v1/auth/entrar').send({ email: 'b@exemplo.com', senha: 'senha de verdade' }).expect(401);
   });
 

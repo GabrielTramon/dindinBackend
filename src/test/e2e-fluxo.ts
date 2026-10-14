@@ -44,8 +44,8 @@ export const APP_URL_E2E = 'https://dindin.app';
  */
 export const PASSOS_DO_FLUXO = [
   'a API está de pé e a persistência responde',
-  'Ana cria a conta com e-mail e senha e já entra; o mesmo e-mail de novo é 409',
-  'Ana confirma o e-mail pelo link, que vale uma vez só',
+  'Ana cria a conta com e-mail e senha: sem sessão, e a senha certa não entra até ela confirmar o e-mail',
+  'Ana confirma o e-mail pelo link, que vale uma vez só e já entra; aí o mesmo e-mail de novo é 409',
   'Ana esquece a senha: o link do e-mail cria uma nova, o reenvio em menos de 60 s é segurado, a antiga para de entrar e a sessão de antes cai',
   'Ana troca a senha com a sessão: a atual errada é 400, nunca 401; a troca devolve sessão nova e derruba as outras',
   'sem perfil: gerar plano é 422 e adicionar gasto é 422',
@@ -356,21 +356,17 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
   }
 
   /**
-   * POST /auth/cadastrar: a conta nasce com a senha e a sessão sai na hora. O
-   * "Confirme seu e-mail" chega com o link no fragmento; devolve o token dele.
+   * POST /auth/cadastrar: a conta nasce PENDENTE, com a senha e sem sessão (202).
+   * O "Confirme seu e-mail" chega com o link no fragmento; devolve o token dele.
    */
-  async function criarConta(ator: Ator, email: string, senha: string): Promise<{ pessoa: Pessoa; tokenDeConfirmacao: string }> {
+  async function criarConta(ator: Ator, email: string, senha: string): Promise<{ email: string; tokenDeConfirmacao: string }> {
     const normalizado = email.trim().toLowerCase();
     senhasUsadas.push(senha);
     const antes = mailer.sent.length;
-    const criada = await api.chamar(ator, 'post', '/auth/cadastrar', { corpo: { email, senha }, status: 201 });
+    const criada = await api.chamar(ator, 'post', '/auth/cadastrar', { corpo: { email, senha }, status: 202 });
     expect(criada.headers['cache-control']).toBe('no-store');
-    expect(criada.headers.location).toBe('/api/v1/me');
-    expect(criada.body).toEqual({
-      accessToken: expect.any(String),
-      expiresAt: expect.any(String),
-      subscriber: { id: expect.any(String), email: normalizado, emailVerificadoEm: null, ativo: true },
-    });
+    expect(criada.body).toEqual({ email: normalizado, message: expect.stringContaining(normalizado) });
+    expect(criada.body).not.toHaveProperty('accessToken');
 
     expect(mailer.sent.length).toBe(antes + 1);
     const mensagem = mailer.last()!;
@@ -378,22 +374,26 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     expect(mensagem.subject).toBe('Confirme seu e-mail no dindin');
     const tokenDeConfirmacao = tokenNoFragmento(mensagem.text, '/entrar');
     tokensDosLinks.push(tokenDeConfirmacao);
-
-    const pessoa = { ator, email: normalizado, id: criada.body.subscriber.id, sessao: criada.body.accessToken };
-    await guardarHashDaSenha(pessoa.id);
-    return { pessoa, tokenDeConfirmacao };
+    return { email: normalizado, tokenDeConfirmacao };
   }
 
-  /** POST /auth/verificar com o link do e-mail: confirma, abre sessão e não funciona duas vezes. */
-  async function confirmarEmail(pessoa: Pessoa, token: string): Promise<void> {
-    const confirmado = await api.chamar(pessoa.ator, 'post', '/auth/verificar', { corpo: { token }, status: 200 });
+  /**
+   * POST /auth/verificar com o link do e-mail: confirma, abre a sessão (é aqui que
+   * a conta passa a valer) e não funciona duas vezes.
+   */
+  async function confirmarEmail(ator: Ator, email: string, token: string): Promise<Pessoa> {
+    const confirmado = await api.chamar(ator, 'post', '/auth/verificar', { corpo: { token }, status: 200 });
     expect(confirmado.headers['cache-control']).toBe('no-store');
     expect(confirmado.body).toMatchObject({
       accessToken: expect.any(String),
-      subscriber: { id: pessoa.id, email: pessoa.email, emailVerificadoEm: clock.now().toISOString(), ativo: true },
+      subscriber: { id: expect.any(String), email, emailVerificadoEm: clock.now().toISOString(), ativo: true },
     });
     // link é de uso único
-    await api.chamar(pessoa.ator, 'post', '/auth/verificar', { corpo: { token }, status: 401 });
+    await api.chamar(ator, 'post', '/auth/verificar', { corpo: { token }, status: 401 });
+
+    const pessoa = { ator, email, id: confirmado.body.subscriber.id, sessao: confirmado.body.accessToken };
+    await guardarHashDaSenha(pessoa.id);
+    return pessoa;
   }
 
   let ana!: Pessoa;
@@ -415,29 +415,53 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     await api.chamar('anonimo', 'get', '/api/health/ready', { status: 200 });
   });
 
-  let tokenDeConfirmacaoDaAna = '';
+  let pendenteDaAna = { email: '', tokenDeConfirmacao: '' };
 
-  await passo('Ana cria a conta com e-mail e senha e já entra; o mesmo e-mail de novo é 409', async () => {
+  await passo('Ana cria a conta com e-mail e senha: sem sessão, e a senha certa não entra até ela confirmar o e-mail', async () => {
     // o login sem senha saiu da API
     await api.chamar('anonimo', 'post', '/auth/link-magico', { corpo: { email: 'ana.souza@exemplo.com' }, status: 404 });
 
-    const criada = await criarConta('ana', '  Ana.Souza@Exemplo.com ', SENHAS_DA_ANA.cadastro);
-    ana = criada.pessoa;
-    tokenDeConfirmacaoDaAna = criada.tokenDeConfirmacao;
+    pendenteDaAna = await criarConta('ana', '  Ana.Souza@Exemplo.com ', SENHAS_DA_ANA.cadastro);
 
-    // a sessão do cadastro já vale, antes de confirmar o e-mail
+    // a senha certa não entra antes do link; a errada e o e-mail sem conta dão o MESMO 401
+    const pendente = await api.chamar('ana', 'post', '/auth/entrar', {
+      corpo: { email: ' ANA.souza@Exemplo.com', senha: SENHAS_DA_ANA.cadastro },
+      status: 403,
+    });
+    expect(pendente.body.error.code).toBe('EMAIL_NAO_CONFIRMADO');
+    expect(pendente.body).not.toHaveProperty('accessToken');
+    const errada = await api.chamar('anonimo', 'post', '/auth/entrar', {
+      corpo: { email: pendenteDaAna.email, senha: 'não é a senha dela' },
+      status: 401,
+    });
+    const semConta = await api.chamar('anonimo', 'post', '/auth/entrar', {
+      corpo: { email: 'ninguem@exemplo.com', senha: SENHAS_DA_ANA.cadastro },
+      status: 401,
+    });
+    expect(errada.body.error.message).toBe('E-mail ou senha incorretos.');
+    expect(semConta.body.error.message).toBe(errada.body.error.message);
+
+    // "mandar de novo" logo em seguida: 202, mas o intervalo de 60 s segura o e-mail
+    const antes = mailer.sent.length;
+    await api.chamar('ana', 'post', '/auth/reenviar-confirmacao', { corpo: { email: pendenteDaAna.email }, status: 202 });
+    expect(mailer.sent.length).toBe(antes);
+  });
+
+  await passo('Ana confirma o e-mail pelo link, que vale uma vez só e já entra; aí o mesmo e-mail de novo é 409', async () => {
+    ana = await confirmarEmail('ana', pendenteDaAna.email, pendenteDaAna.tokenDeConfirmacao);
+
     const me = await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 200 });
     expect(me.headers['cache-control']).toBe('private, no-store');
     expect(me.body).toEqual({
       id: ana.id,
       email: 'ana.souza@exemplo.com',
-      emailVerificadoEm: null,
+      emailVerificadoEm: clock.now().toISOString(),
       ativo: true,
       temSenha: true,
-      criadoEm: clock.now().toISOString(),
+      criadoEm: new Date(clock.now().getTime() - 60_000).toISOString(),
     });
 
-    // o mesmo e-mail de novo: 409 com a mensagem pra tela, e nenhum e-mail a mais
+    // a conta confirmada: o mesmo e-mail de novo é 409 com a mensagem pra tela, e nenhum e-mail a mais
     const antes = mailer.sent.length;
     const repetido = await api.chamar('anonimo', 'post', '/auth/cadastrar', {
       corpo: { email: 'ANA.SOUZA@exemplo.com', senha: 'outra senha qualquer' },
@@ -449,29 +473,18 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
     });
     expect(mailer.sent.length).toBe(antes);
 
-    // entrar: senha errada e e-mail sem conta dão o MESMO 401; a certa entra
-    const errada = await api.chamar('anonimo', 'post', '/auth/entrar', {
-      corpo: { email: ana.email, senha: 'não é a senha dela' },
-      status: 401,
-    });
-    const semConta = await api.chamar('anonimo', 'post', '/auth/entrar', {
-      corpo: { email: 'ninguem@exemplo.com', senha: SENHAS_DA_ANA.cadastro },
-      status: 401,
-    });
-    expect(errada.body.error.message).toBe('E-mail ou senha incorretos.');
-    expect(semConta.body.error.message).toBe(errada.body.error.message);
+    // e agora a senha entra
     const entrou = await api.chamar('ana', 'post', '/auth/entrar', {
       corpo: { email: ' ANA.souza@Exemplo.com', senha: SENHAS_DA_ANA.cadastro },
       status: 200,
     });
     expect(entrou.headers['cache-control']).toBe('no-store');
-    expect(entrou.body.subscriber).toEqual({ id: ana.id, email: ana.email, emailVerificadoEm: null, ativo: true });
-  });
-
-  await passo('Ana confirma o e-mail pelo link, que vale uma vez só', async () => {
-    await confirmarEmail(ana, tokenDeConfirmacaoDaAna);
-    const me = await api.chamar('ana', 'get', '/me', { sessao: ana.sessao, status: 200 });
-    expect(me.body.emailVerificadoEm).toBe(clock.now().toISOString());
+    expect(entrou.body.subscriber).toEqual({
+      id: ana.id,
+      email: ana.email,
+      emailVerificadoEm: me.body.emailVerificadoEm,
+      ativo: true,
+    });
   });
 
   await passo(
@@ -817,9 +830,8 @@ export async function executarFluxoCompleto(amb: AmbienteE2E): Promise<Resultado
 
   await passo('Bruno cria a conta no meio, confirma o e-mail, monta o perfil, gera plano e cria meta', async () => {
     const criada = await criarConta('bruno', 'bruno@exemplo.com.br', SENHA_DO_BRUNO);
-    bruno = criada.pessoa;
-    // confirmado: é isso que põe o Bruno no e-mail mensal do job
-    await confirmarEmail(bruno, criada.tokenDeConfirmacao);
+    // confirmado: é isso que faz a conta valer e põe o Bruno no e-mail mensal do job
+    bruno = await confirmarEmail('bruno', criada.email, criada.tokenDeConfirmacao);
     expect(bruno.id).not.toBe(ana.id);
     const perfil = await api.chamar('bruno', 'put', '/perfil/completo', { sessao: bruno.sessao, corpo: PERFIL_DO_BRUNO, status: 200 });
     expect(perfil.body).toEqual(PERFIL_DO_BRUNO);

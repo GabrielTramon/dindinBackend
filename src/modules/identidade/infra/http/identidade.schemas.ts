@@ -25,6 +25,8 @@ export const entrarBody = z.object({
 
 export const esqueciSenhaBody = z.object({ email });
 
+export const reenviarConfirmacaoBody = z.object({ email });
+
 const tokenDoLink = z
   .string({ error: 'Link inválido. Abra o link do e-mail de novo.' })
   .min(1, { error: 'Link inválido. Abra o link do e-mail de novo.' })

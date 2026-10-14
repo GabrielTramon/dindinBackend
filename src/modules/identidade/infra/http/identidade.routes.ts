@@ -8,6 +8,7 @@ import type { DescadastrarUseCase } from '../../application/descadastrar.use-cas
 import type { EntrarComSenhaUseCase } from '../../application/entrar-com-senha.use-case';
 import type { ObterMeUseCase } from '../../application/obter-me.use-case';
 import type { ReativarUseCase } from '../../application/reativar.use-case';
+import type { ReenviarConfirmacaoUseCase } from '../../application/reenviar-confirmacao.use-case';
 import type { RedefinirSenhaUseCase } from '../../application/redefinir-senha.use-case';
 import type { SolicitarRedefinicaoDeSenhaUseCase } from '../../application/solicitar-redefinicao-de-senha.use-case';
 import type { TrocarSenhaUseCase } from '../../application/trocar-senha.use-case';
@@ -18,17 +19,19 @@ import {
   entrarBody,
   esqueciSenhaBody,
   redefinirSenhaBody,
+  reenviarConfirmacaoBody,
   trocarSenhaBody,
   verificarLinkBody,
 } from './identidade.schemas';
 import { presentSessao, presentSubscriber } from './subscriber.presenter';
 
 /*
-  POST /auth/cadastrar        cria a conta com e-mail e senha e já entra (público)     201
-  POST /auth/entrar           e-mail e senha → sessão (público)                        200
+  POST /auth/cadastrar        conta pendente + "Confirme seu e-mail" (público)         202
+  POST /auth/reenviar-confirmacao  o "Confirme seu e-mail" de novo (público)           202
+  POST /auth/entrar           e-mail e senha → sessão; e-mail não confirmado é 403     200
   POST /auth/esqueci-senha    manda o link "Criar uma senha nova" (público)            202
   POST /auth/redefinir-senha  link do e-mail + senha nova → sessão (público)           200
-  POST /auth/verificar        link "Confirme seu e-mail" → sessão (público)            200
+  POST /auth/verificar        link "Confirme seu e-mail" → confirma e abre a sessão    200
   GET  /me                    a conta autenticada, com temSenha                        200
   POST /me/senha              troca (ou cria, na conta antiga) a senha → sessão nova   200
   POST /me/descadastrar       para o e-mail mensal                                     200
@@ -36,6 +39,11 @@ import { presentSessao, presentSubscriber } from './subscriber.presenter';
   POST /descadastrar          descadastro pelo link do e-mail (público)                204
 
   POST /auth/link-magico (entrar sem senha) saiu: responde 404.
+
+  A conta só passa a valer pelo link do e-mail (desde 14/10/2026): o cadastro
+  não devolve sessão, e o entrar de conta não confirmada responde 403
+  EMAIL_NAO_CONFIRMADO (só depois da senha conferida). O reenvio, como o
+  Esqueci a senha, responde 202 com a mesma frase sem esperar nada.
 
   Toda rota pública tem limite por IP, um contador por rota; o Esqueci a senha
   ainda tem o limite por endereço, no caso de uso. As respostas com sessão vão
@@ -55,6 +63,7 @@ export const LIMITES_POR_IP = {
   cadastrar: { windowMs: QUINZE_MINUTOS, limit: 10 },
   entrar: { windowMs: QUINZE_MINUTOS, limit: 10 },
   esqueciSenha: { windowMs: QUINZE_MINUTOS, limit: 5 },
+  reenviarConfirmacao: { windowMs: QUINZE_MINUTOS, limit: 5 },
   redefinirSenha: { windowMs: QUINZE_MINUTOS, limit: 20 },
   verificar: { windowMs: QUINZE_MINUTOS, limit: 20 },
   // com a sessão, mas confere a senha atual: sem teto, uma sessão roubada testaria senhas à vontade
@@ -66,15 +75,20 @@ export const LIMITES_POR_IP = {
 export const MENSAGEM_ESQUECI_SENHA =
   'Se existir uma conta com esse e-mail, o link pra criar uma senha nova chega em instantes.';
 
-/** Onde avisar que o e-mail de confirmação não saiu (a conta foi criada do mesmo jeito). */
-export interface AvisosDeIdentidade {
-  warn(mensagem: string, contexto: Record<string, unknown>): void;
+/** A resposta do cadastro: o link foi; a conta passa a valer quando ela abrir. */
+export function mensagemConfirmeEmail(email: string): string {
+  return `Mandamos um link pra ${email}. Abra o e-mail e toque no link pra confirmar: a conta só passa a valer depois disso.`;
 }
+
+/** A mesma frase pra e-mail sem conta, já confirmado e dentro do limite de reenvio: não revela nada. */
+export const MENSAGEM_REENVIO_CONFIRMACAO =
+  'Se esse e-mail estiver esperando confirmação, o link chega em instantes. Confira também o spam.';
 
 export interface IdentidadeRouterDeps {
   cadastrar: CadastrarComSenhaUseCase;
   entrar: EntrarComSenhaUseCase;
   solicitarRedefinicao: SolicitarRedefinicaoDeSenhaUseCase;
+  reenviarConfirmacao: ReenviarConfirmacaoUseCase;
   redefinirSenha: RedefinirSenhaUseCase;
   verificarLink: VerificarLinkMagicoUseCase;
   trocarSenha: TrocarSenhaUseCase;
@@ -84,7 +98,6 @@ export interface IdentidadeRouterDeps {
   descadastrarPorToken: DescadastrarPorTokenUseCase;
   auth: AuthMiddlewares;
   rateLimit: { enabled: boolean };
-  avisos: AvisosDeIdentidade;
 }
 
 export function createIdentidadeRouter(deps: IdentidadeRouterDeps): Router {
@@ -95,6 +108,7 @@ export function createIdentidadeRouter(deps: IdentidadeRouterDeps): Router {
   const limiteCadastrar = limite('cadastrar');
   const limiteEntrar = limite('entrar');
   const limiteEsqueciSenha = limite('esqueciSenha');
+  const limiteReenviarConfirmacao = limite('reenviarConfirmacao');
   const limiteRedefinirSenha = limite('redefinirSenha');
   const limiteVerificar = limite('verificar');
   const limiteTrocarSenha = limite('trocarSenha');
@@ -102,17 +116,16 @@ export function createIdentidadeRouter(deps: IdentidadeRouterDeps): Router {
 
   router.post('/auth/cadastrar', limiteCadastrar, async (req, res) => {
     const { email, senha } = parseBody(req, cadastrarBody);
-    const resultado = await deps.cadastrar.execute({ email, senha });
-    if (resultado.falhaNoEnvio) {
-      const { erro } = resultado.falhaNoEnvio;
-      deps.avisos.warn('Conta criada, mas o e-mail de confirmação não saiu', {
-        requestId: req.requestId,
-        erro: erro instanceof Error ? { name: erro.name, message: erro.message } : String(erro),
-      });
-    }
-    // a resposta carrega a sessão: nenhum cache guarda
+    // sem sessão: a conta passa a valer no link do e-mail (POST /auth/verificar)
+    const { subscriber } = await deps.cadastrar.execute({ email, senha });
     res.set('Cache-Control', 'no-store');
-    res.status(201).location('/api/v1/me').json(presentSessao(resultado));
+    res.status(202).json({ email: subscriber.email, message: mensagemConfirmeEmail(subscriber.email) });
+  });
+
+  router.post('/auth/reenviar-confirmacao', limiteReenviarConfirmacao, async (req, res) => {
+    const { email } = parseBody(req, reenviarConfirmacaoBody);
+    await deps.reenviarConfirmacao.execute({ email });
+    res.status(202).json({ message: MENSAGEM_REENVIO_CONFIRMACAO });
   });
 
   router.post('/auth/entrar', limiteEntrar, async (req, res) => {

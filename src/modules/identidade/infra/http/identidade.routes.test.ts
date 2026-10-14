@@ -10,7 +10,6 @@ import { InMemorySubscribersRepository } from '../database/in-memory-subscribers
 let kit: TestKit;
 let app: ReturnType<TestKit['app']>;
 let subscribers: InMemorySubscribersRepository;
-let avisos: Array<{ mensagem: string; contexto: Record<string, unknown> }>;
 
 const MINUTO = 60_000;
 const HORA = 60 * MINUTO;
@@ -20,6 +19,11 @@ const MENSAGEM_ESQUECI = 'Se existir uma conta com esse e-mail, o link pra criar
 const LINK_INVALIDO = 'Esse link expirou ou já foi usado. Peça um novo.';
 const CREDENCIAIS_INVALIDAS = 'E-mail ou senha incorretos.';
 const JA_CADASTRADO = 'Já existe uma conta com esse e-mail. Entre com a sua senha ou use “Esqueci a senha”.';
+const REENVIO = 'Se esse e-mail estiver esperando confirmação, o link chega em instantes. Confira também o spam.';
+const confirmeEmail = (email: string) =>
+  `Mandamos um link pra ${email}. Abra o e-mail e toque no link pra confirmar: a conta só passa a valer depois disso.`;
+const naoConfirmado = (email: string) =>
+  `Falta confirmar seu e-mail. Abra o link que mandamos pra ${email} — a conta só passa a valer depois disso.`;
 
 /*
   A sessão como o main confere — a versão das sessões lida da conta no
@@ -53,7 +57,6 @@ function montar({ rateLimit }: { rateLimit: boolean }) {
           linkResendCooldownSeconds: 60,
         },
         rateLimit: { enabled: rateLimit },
-        avisos: { warn: (mensagem, contexto) => avisos.push({ mensagem, contexto }) },
       }).router,
     ),
   );
@@ -62,7 +65,6 @@ function montar({ rateLimit }: { rateLimit: boolean }) {
 beforeEach(() => {
   kit = createTestKit();
   subscribers = new InMemorySubscribersRepository();
-  avisos = [];
   app = montar({ rateLimit: false });
 });
 
@@ -93,9 +95,17 @@ function tokenDoUltimoEmail(caminho: '/entrar' | '/redefinir-senha'): string {
   return decodeURIComponent(achado[1]);
 }
 
-/** cria a conta e devolve a sessão */
+/** o reenvio e, depois da resposta, o envio que ele agendou */
+async function reenviar(email: unknown, status: number) {
+  const res = await request(app).post('/api/v1/auth/reenviar-confirmacao').send({ email }).expect(status);
+  await kit.backgroundJobs.idle();
+  return res;
+}
+
+/** cria a conta do jeito que ela passa a valer: cadastro → link do e-mail → sessão */
 async function criarConta(email: string, senha = SENHA): Promise<{ id: string; bearer: string }> {
-  const { body } = await cadastrar(email, senha).expect(201);
+  await cadastrar(email, senha).expect(202);
+  const { body } = await verificar(tokenDoUltimoEmail('/entrar')).expect(200);
   return { id: body.subscriber.id, bearer: `Bearer ${body.accessToken}` };
 }
 
@@ -109,16 +119,11 @@ async function contaAntiga(email: string): Promise<{ id: string; bearer: string 
 }
 
 describe('POST /api/v1/auth/cadastrar', () => {
-  it('201 com a sessão (sem cache) e Location; manda o "Confirme seu e-mail" com o link no fragmento', async () => {
-    const res = await cadastrar('  Pessoa@Exemplo.COM ').expect(201);
+  it('202 SEM sessão; manda o "Confirme seu e-mail" com o link no fragmento, e a conta só vale depois dele', async () => {
+    const res = await cadastrar('  Pessoa@Exemplo.COM ').expect(202);
 
     expect(res.headers['cache-control']).toBe('no-store');
-    expect(res.headers.location).toBe('/api/v1/me');
-    expect(res.body).toEqual({
-      accessToken: expect.any(String),
-      expiresAt: '2026-10-17T12:00:00.000Z',
-      subscriber: { id: 'id-1', email: 'pessoa@exemplo.com', emailVerificadoEm: null, ativo: true },
-    });
+    expect(res.body).toEqual({ email: 'pessoa@exemplo.com', message: confirmeEmail('pessoa@exemplo.com') });
 
     const email = kit.mailer.last();
     expect(email?.to).toBe('pessoa@exemplo.com');
@@ -126,23 +131,41 @@ describe('POST /api/v1/auth/cadastrar', () => {
     expect(email?.text).toContain('https://dindin.test/entrar#token=');
     expect(email?.text).not.toMatch(/[?&]token=/);
 
-    // entra na hora: a sessão já vale
-    const me = await request(app).get('/api/v1/me').set('Authorization', `Bearer ${res.body.accessToken}`).expect(200);
-    expect(me.body).toMatchObject({ email: 'pessoa@exemplo.com', emailVerificadoEm: null, temSenha: true });
+    // antes do link, a senha certa não entra
+    const antes = await entrar('pessoa@exemplo.com').expect(403);
+    expect(antes.body.error).toMatchObject({ code: 'EMAIL_NAO_CONFIRMADO', message: naoConfirmado('pessoa@exemplo.com') });
+
+    // o link confirma e já entra; depois, a senha também
+    const confirmou = await verificar(tokenDoUltimoEmail('/entrar')).expect(200);
+    await request(app).get('/api/v1/me').set('Authorization', `Bearer ${confirmou.body.accessToken}`).expect(200);
+    await entrar('pessoa@exemplo.com').expect(200);
   });
 
-  it('a resposta nunca traz a senha nem o hash dela', async () => {
-    const res = await cadastrar('a@x.dev').expect(201);
+  it('a resposta nunca traz a senha, o hash nem um token', async () => {
+    const res = await cadastrar('a@x.dev').expect(202);
     expect(res.text).not.toContain(SENHA);
-    // nenhuma chave nem valor fala de senha ou hash (o hash do dublê seria "senha(…)")
-    expect(res.text).not.toMatch(/senha|hash/i);
+    expect(res.text).not.toMatch(/hash|token|senha\(/i);
   });
 
-  it('e-mail que já tem conta → 409 com a mensagem pra tela no campo e-mail', async () => {
-    await cadastrar('a@x.dev').expect(201);
+  it('e-mail de conta confirmada → 409 com a mensagem pra tela no campo e-mail', async () => {
+    await criarConta('a@x.dev');
     const res = await cadastrar('A@x.dev', OUTRA_SENHA).expect(409);
     expect(res.body.error).toMatchObject({ code: 'CONFLITO', message: JA_CADASTRADO, details: { email: JA_CADASTRADO } });
     expect(kit.mailer.sent).toHaveLength(1);
+    await entrar('a@x.dev', SENHA).expect(200);
+  });
+
+  it('e-mail de conta PENDENTE → 202 de novo: senha nova e link novo; o de antes não vale mais', async () => {
+    await cadastrar('a@x.dev').expect(202);
+    const primeiro = tokenDoUltimoEmail('/entrar');
+    kit.clock.advance(MINUTO);
+
+    await cadastrar('a@x.dev', OUTRA_SENHA).expect(202);
+    expect(kit.mailer.sent).toHaveLength(2);
+    await verificar(primeiro).expect(401);
+    await verificar(tokenDoUltimoEmail('/entrar')).expect(200);
+    await entrar('a@x.dev', SENHA).expect(401);
+    await entrar('a@x.dev', OUTRA_SENHA).expect(200);
   });
 
   it('e-mail inválido e senha curta → 400 com os dois campos, sem gravar nem enviar', async () => {
@@ -173,37 +196,80 @@ describe('POST /api/v1/auth/cadastrar', () => {
   });
 
   it('a senha nunca é trimada: entra só com os espaços que tinha no cadastro', async () => {
-    await cadastrar('a@x.dev', `  ${SENHA}  `).expect(201);
+    await criarConta('a@x.dev', `  ${SENHA}  `);
     await entrar('a@x.dev', SENHA).expect(401);
     await entrar('a@x.dev', `  ${SENHA}  `).expect(200);
   });
 
-  it('falha no envio da confirmação → 201 do mesmo jeito, com um aviso no log (não é erro 500)', async () => {
+  it('falha no envio da confirmação → 500 (sem o e-mail a conta não tem como valer); a próxima tentativa manda na hora', async () => {
     kit.mailer.failNext = true;
-    const res = await cadastrar('a@x.dev').expect(201);
-    expect(res.body.subscriber.email).toBe('a@x.dev');
-    expect(avisos).toEqual([
-      {
-        mensagem: 'Conta criada, mas o e-mail de confirmação não saiu',
-        contexto: { requestId: expect.any(String), erro: { name: 'Error', message: 'falha simulada de envio' } },
-      },
-    ]);
-    await entrar('a@x.dev').expect(200);
+    const res = await cadastrar('a@x.dev').expect(500);
+    expect(res.body.error.code).toBe('ERRO_INTERNO');
+    expect(kit.unexpectedErrors).toHaveLength(1);
+    // esperado neste teste: não conta como falha escondida
+    kit.unexpectedErrors.splice(0);
+
+    await cadastrar('a@x.dev').expect(202);
+    await verificar(tokenDoUltimoEmail('/entrar')).expect(200);
   });
 
   it('limite por IP: a 11ª tentativa em 15 minutos → 429, com contador separado do entrar', async () => {
     app = montar({ rateLimit: true });
-    for (let i = 0; i < 10; i++) await cadastrar(`pessoa${i}@x.dev`).expect(201);
+    for (let i = 0; i < 10; i++) await cadastrar(`pessoa${i}@x.dev`).expect(202);
 
     const res = await cadastrar('mais-uma@x.dev').expect(429);
     expect(res.body.error.code).toBe('MUITAS_REQUISICOES');
-    await entrar('pessoa0@x.dev').expect(200);
+    // o entrar tem o seu contador: chega na conta (que ainda espera a confirmação)
+    await entrar('pessoa0@x.dev').expect(403);
+  });
+});
+
+describe('POST /api/v1/auth/reenviar-confirmacao', () => {
+  it('202 com a mesma frase pra conta pendente, confirmada e e-mail sem conta; só a pendente recebe um link novo', async () => {
+    await cadastrar('pendente@x.dev').expect(202);
+    const primeiro = tokenDoUltimoEmail('/entrar');
+    await criarConta('confirmada@x.dev');
+    kit.clock.advance(MINUTO);
+    const enviados = kit.mailer.sent.length;
+
+    const respostas = [
+      await reenviar(' Pendente@x.dev', 202),
+      await reenviar('confirmada@x.dev', 202),
+      await reenviar('ninguem@x.dev', 202),
+    ];
+    for (const res of respostas) expect(res.body).toEqual({ message: REENVIO });
+
+    expect(kit.mailer.sent).toHaveLength(enviados + 1);
+    expect(kit.mailer.last()?.to).toBe('pendente@x.dev');
+    await verificar(primeiro).expect(401);
+    await verificar(tokenDoUltimoEmail('/entrar')).expect(200);
+  });
+
+  it('dentro de 60 s do último link: 202 igual, sem e-mail novo', async () => {
+    await cadastrar('a@x.dev').expect(202);
+    kit.clock.advance(30_000);
+    await reenviar('a@x.dev', 202);
+    expect(kit.mailer.sent).toHaveLength(1);
+  });
+
+  it('e-mail inválido ou ausente → 400, sem enviar nada', async () => {
+    const res = await reenviar('sem-arroba', 400);
+    expect(res.body.error).toMatchObject({ code: 'VALIDACAO', details: { email: 'Informe um e-mail válido' } });
+    await request(app).post('/api/v1/auth/reenviar-confirmacao').send({}).expect(400);
+    expect(kit.mailer.sent).toHaveLength(0);
+  });
+
+  it('limite por IP: a 6ª tentativa em 15 minutos → 429', async () => {
+    app = montar({ rateLimit: true });
+    for (let i = 0; i < 5; i++) await reenviar(`pessoa${i}@x.dev`, 202);
+    const res = await reenviar('mais-uma@x.dev', 429);
+    expect(res.body.error.code).toBe('MUITAS_REQUISICOES');
   });
 });
 
 describe('POST /api/v1/auth/entrar', () => {
   beforeEach(async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await criarConta('a@x.dev');
   });
 
   it('200 com a sessão (sem cache), aceitando o e-mail com maiúscula e espaço', async () => {
@@ -212,9 +278,18 @@ describe('POST /api/v1/auth/entrar', () => {
     expect(res.body).toEqual({
       accessToken: expect.any(String),
       expiresAt: expect.any(String),
-      subscriber: { id: 'id-1', email: 'a@x.dev', emailVerificadoEm: null, ativo: true },
+      subscriber: { id: 'id-1', email: 'a@x.dev', emailVerificadoEm: '2026-09-17T12:00:00.000Z', ativo: true },
     });
     await request(app).get('/api/v1/me').set('Authorization', `Bearer ${res.body.accessToken}`).expect(200);
+  });
+
+  it('conta que ainda espera a confirmação: senha certa → 403 EMAIL_NAO_CONFIRMADO; errada → o 401 de sempre', async () => {
+    await cadastrar('b@x.dev').expect(202);
+    const res = await entrar('B@x.dev').expect(403);
+    expect(res.body.error).toMatchObject({ code: 'EMAIL_NAO_CONFIRMADO', message: naoConfirmado('b@x.dev') });
+    expect(res.body).not.toHaveProperty('accessToken');
+    const errada = await entrar('b@x.dev', OUTRA_SENHA).expect(401);
+    expect(errada.body.error).toMatchObject({ code: 'NAO_AUTENTICADO', message: CREDENCIAIS_INVALIDAS });
   });
 
   it('senha errada, e-mail sem conta e conta sem senha → o MESMO 401', async () => {
@@ -251,7 +326,7 @@ describe('POST /api/v1/auth/entrar', () => {
 
 describe('POST /api/v1/auth/esqueci-senha', () => {
   it('202 com a mesma frase pra e-mail com e sem conta; só quem tem conta recebe o link no fragmento', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
 
     const comConta = await esqueci(' A@x.dev', 202);
@@ -268,7 +343,7 @@ describe('POST /api/v1/auth/esqueci-senha', () => {
   });
 
   it('reenvio dentro de 60 s: 202 igual, sem segundo e-mail', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
     await esqueci('a@x.dev', 202);
     kit.clock.advance(30_000);
@@ -288,7 +363,7 @@ describe('POST /api/v1/auth/esqueci-senha', () => {
   });
 
   it('falha no envio → o MESMO 202 (a falha vai pro log, não revela quem tem conta), e a próxima tentativa envia sem esperar o intervalo', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
     kit.mailer.failNext = true;
     const res = await esqueci('a@x.dev', 202);
@@ -304,7 +379,7 @@ describe('POST /api/v1/auth/esqueci-senha', () => {
   });
 
   it('o 202 sai sem esperar a conta nem o e-mail: um provedor travado não segura a resposta', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
     let envios = 0;
     kit.mailer.send = () => {
@@ -333,7 +408,7 @@ describe('POST /api/v1/auth/redefinir-senha', () => {
   }
 
   it('fluxo completo: esqueci → link → senha nova → sessão com o e-mail confirmado; só a nova entra', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
     const token = await pedirSenhaNova();
     kit.clock.advance(2 * MINUTO);
@@ -356,7 +431,7 @@ describe('POST /api/v1/auth/redefinir-senha', () => {
   });
 
   it('link usado, vencido ou inventado → 401 com a mensagem pra tela', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
     const usado = await pedirSenhaNova();
     await redefinir(usado).expect(200);
@@ -373,7 +448,7 @@ describe('POST /api/v1/auth/redefinir-senha', () => {
   });
 
   it('senha fora da regra → 400 no campo e o link continua valendo', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
     const token = await pedirSenhaNova();
 
@@ -388,7 +463,7 @@ describe('POST /api/v1/auth/redefinir-senha', () => {
   });
 
   it('a senha nova encerra as sessões de antes: quem criou a conta com o seu e-mail (ou roubou a senha) sai', async () => {
-    // alguém cria a conta com o e-mail da dona e fica com a sessão de 30 dias
+    // alguém com a senha dela (ou uma sessão de antes da confirmação obrigatória) fica com a sessão de 30 dias
     const intrusa = await criarConta('a@x.dev');
     const outroAparelho = `Bearer ${(await entrar('a@x.dev').expect(200)).body.accessToken}`;
     kit.clock.advance(MINUTO);
@@ -409,9 +484,11 @@ describe('POST /api/v1/auth/redefinir-senha', () => {
   });
 
   it('o link do "Confirme seu e-mail" não cria senha: 401 e a senha fica', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     const res = await redefinir(tokenDoUltimoEmail('/entrar')).expect(401);
     expect(res.body.error).toMatchObject({ code: 'NAO_AUTENTICADO', message: LINK_INVALIDO });
+    // o link continua valendo pro que ele serve: confirmar
+    await verificar(tokenDoUltimoEmail('/entrar')).expect(200);
     await entrar('a@x.dev', SENHA).expect(200);
     await entrar('a@x.dev', OUTRA_SENHA).expect(401);
   });
@@ -419,7 +496,7 @@ describe('POST /api/v1/auth/redefinir-senha', () => {
 
 describe('POST /api/v1/auth/verificar (o link do "Confirme seu e-mail")', () => {
   it('confirma o e-mail e abre a sessão; GET /me passa a mostrar a confirmação', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(5 * MINUTO);
 
     const res = await verificar(tokenDoUltimoEmail('/entrar')).expect(200);
@@ -442,27 +519,28 @@ describe('POST /api/v1/auth/verificar (o link do "Confirme seu e-mail")', () => 
   });
 
   it('segundo uso → 401; vencido (48 h) → 401 e o e-mail continua sem confirmação', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     const token = tokenDoUltimoEmail('/entrar');
     await verificar(token).expect(200);
     const res = await verificar(token).expect(401);
     expect(res.body.error).toMatchObject({ code: 'NAO_AUTENTICADO', message: LINK_INVALIDO });
 
-    await cadastrar('b@x.dev').expect(201);
+    await cadastrar('b@x.dev').expect(202);
     kit.clock.advance(48 * HORA + 1);
     await verificar(tokenDoUltimoEmail('/entrar')).expect(401);
     expect((await subscribers.findByEmail('b@x.dev'))?.emailVerificadoEm).toBeNull();
   });
 
   it('o link de senha nova não abre sessão aqui (seria entrar sem senha): 401, e a senha antiga continua', async () => {
-    await cadastrar('a@x.dev').expect(201);
+    await cadastrar('a@x.dev').expect(202);
     kit.clock.advance(MINUTO);
     await esqueci('a@x.dev', 202);
     const deSenhaNova = tokenDoUltimoEmail('/redefinir-senha');
 
     const res = await verificar(deSenhaNova).expect(401);
     expect(res.body.error).toMatchObject({ code: 'NAO_AUTENTICADO', message: LINK_INVALIDO });
-    await entrar('a@x.dev', SENHA).expect(200);
+    // a senha antiga continua a da conta (que segue esperando a confirmação)
+    await entrar('a@x.dev', SENHA).expect(403);
     // o link segue valendo pro que ele serve
     await redefinir(deSenhaNova).expect(200);
   });
@@ -530,7 +608,7 @@ describe('POST /api/v1/me/senha', () => {
     expect(res.body).toEqual({
       accessToken: expect.any(String),
       expiresAt: expect.any(String),
-      subscriber: { id: a.id, email: 'a@x.dev', emailVerificadoEm: null, ativo: true },
+      subscriber: { id: a.id, email: 'a@x.dev', emailVerificadoEm: '2026-09-17T12:00:00.000Z', ativo: true },
     });
 
     await request(app).get('/api/v1/me').set('Authorization', a.bearer).expect(401);

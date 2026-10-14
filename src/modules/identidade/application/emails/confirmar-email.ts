@@ -2,9 +2,8 @@ import type { EmailMessage } from '../../../../shared/application/ports';
 import { escaparHtml, linkComToken, textoDaValidade } from './link-no-email';
 
 /*
-  "Confirme seu e-mail", mandado no cadastro. A pessoa já entrou (a senha basta
-  pra isso); o link só prova que o endereço é dela — sem essa prova o e-mail
-  mensal nunca sai, porque o endereço pode ter sido digitado por outra pessoa.
+  "Confirme seu e-mail", mandado no cadastro (e no "Mandar de novo"). A conta só
+  passa a valer quando a pessoa abre o link: ele prova que o endereço é dela.
   Abre /entrar#token=…, que confirma e já entra.
 */
 
@@ -25,22 +24,22 @@ export function emailConfirmarEmail({ para, appUrl, token, validadeEmMinutos }: 
   const text = [
     'Oi!',
     '',
-    'Sua conta no dindin foi criada. Pra confirmar que este e-mail é seu, abra este link:',
+    'Falta só um passo pra sua conta no dindin valer: confirmar que este e-mail é seu. Abra este link:',
     '',
     link,
     '',
     `Ele vale por ${validade} e funciona uma vez só.`,
     '',
-    'Se não foi você que criou a conta, ignore este e-mail.',
+    'Se não foi você que pediu, ignore este e-mail: sem a confirmação, a conta não passa a valer.',
   ].join('\n');
 
   const html = [
     '<p>Oi!</p>',
-    '<p>Sua conta no dindin foi criada. Pra confirmar que este e-mail é seu, abra este link:</p>',
+    '<p>Falta só um passo pra sua conta no dindin valer: confirmar que este e-mail é seu. Abra este link:</p>',
     `<p><a href="${escaparHtml(link)}">Confirmar meu e-mail</a></p>`,
     `<p>Ele vale por ${validade} e funciona uma vez só.</p>`,
     `<p>Se o link não abrir, copie e cole no navegador:<br>${escaparHtml(link)}</p>`,
-    '<p>Se não foi você que criou a conta, ignore este e-mail.</p>',
+    '<p>Se não foi você que pediu, ignore este e-mail: sem a confirmação, a conta não passa a valer.</p>',
   ].join('\n');
 
   return { to: para, subject: ASSUNTO_CONFIRMAR_EMAIL, text, html };

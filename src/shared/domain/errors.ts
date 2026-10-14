@@ -14,7 +14,8 @@ export type ErrorCode =
   | 'NAO_ENCONTRADO'
   | 'CONFLITO'
   | 'NAO_AUTENTICADO'
-  | 'PROIBIDO';
+  | 'PROIBIDO'
+  | 'EMAIL_NAO_CONFIRMADO';
 
 export abstract class AppError extends Error {
   abstract readonly code: ErrorCode;
@@ -55,4 +56,13 @@ export class UnauthorizedError extends AppError {
 
 export class ForbiddenError extends AppError {
   readonly code = 'PROIBIDO' as const;
+}
+
+/**
+ * Senha certa, mas o e-mail da conta ainda não foi confirmado: a conta só passa
+ * a valer pelo link do e-mail. Código próprio (e não PROIBIDO) porque a tela
+ * responde diferente — oferece mandar o link de novo.
+ */
+export class EmailNaoConfirmadoError extends AppError {
+  readonly code = 'EMAIL_NAO_CONFIRMADO' as const;
 }

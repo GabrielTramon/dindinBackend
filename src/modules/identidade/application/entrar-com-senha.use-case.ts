@@ -1,6 +1,6 @@
 import type { AuthTokenService, PasswordHasher } from '../../../shared/application/ports';
 import type { UseCase } from '../../../shared/application/use-case';
-import { UnauthorizedError } from '../../../shared/domain/errors';
+import { EmailNaoConfirmadoError, UnauthorizedError } from '../../../shared/domain/errors';
 import type { SubscribersRepository } from '../domain/subscribers-repository';
 import { credenciaisDeEntrada } from './credenciais';
 import type { SessaoAberta } from './sessao-aberta';
@@ -20,9 +20,18 @@ export interface EntrarComSenhaInput {
   senha: string;
 }
 
+/** A conta existe e a senha confere, mas o e-mail não foi confirmado: a tela oferece mandar o link de novo. */
+export function mensagemEmailNaoConfirmado(email: string): string {
+  return `Falta confirmar seu e-mail. Abra o link que mandamos pra ${email} — a conta só passa a valer depois disso.`;
+}
+
 /**
- * Entrar com e-mail e senha. Não exige e-mail confirmado (a pessoa entra na hora
- * do cadastro) nem conta ativa (descadastro só para o e-mail mensal).
+ * Entrar com e-mail e senha. Exige o e-mail confirmado: a conta só passa a
+ * valer pelo link do "Confirme seu e-mail" (CadastrarComSenha). Não exige conta
+ * ativa (descadastro só para o e-mail mensal).
+ *
+ * O "falta confirmar" só sai DEPOIS da senha conferida: sem a senha, a conta
+ * pendente responde o mesmo 401 de sempre e não revela que o e-mail tem conta.
  */
 export class EntrarComSenhaUseCase implements UseCase<EntrarComSenhaInput, SessaoAberta> {
   private hashDeMentira: Promise<string> | null = null;
@@ -46,6 +55,7 @@ export class EntrarComSenhaUseCase implements UseCase<EntrarComSenhaInput, Sessa
     }
 
     if (!(await this.passwords.verify(senha, senhaHash))) throw new UnauthorizedError(MENSAGEM_CREDENCIAIS_INVALIDAS);
+    if (subscriber.emailVerificadoEm === null) throw new EmailNaoConfirmadoError(mensagemEmailNaoConfirmado(subscriber.email));
     return { subscriber, sessao: this.authTokens.issueSession(subscriber.id, subscriber.versaoSessao) };
   }
 
